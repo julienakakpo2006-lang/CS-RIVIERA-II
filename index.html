@@ -1,0 +1,2082 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Complexe Scolaire RIVIERA II — Gestion Scolaire</title>
+  <link rel="stylesheet" href="css/style.css">
+  <link rel="icon" type="image/jpeg" href="assets/logo.jpeg">
+  <link rel="manifest" href="manifest.json">
+  <meta name="theme-color" content="#0b4f9c">
+  
+  <!-- BIBLIOTHÈQUE SUPABASE CLIENT -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <!-- BIBLIOTHÈQUE OFFICIELLE EXCEL (SheetJS) -->
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+</head>
+<body>
+
+  <!-- ========================================== -->
+  <!-- 1. ÉCRAN DE CONNEXION AVEC SÉLECTEUR DE COMPTE -->
+  <!-- ========================================== -->
+  <section id="view-auth" class="auth-wrapper">
+    <div class="auth-card">
+      <div class="auth-header">
+        <img src="assets/logo.jpeg" alt="Logo Complexe Scolaire RIVIERA II" class="auth-logo" id="auth-school-logo">
+        <h1>Complexe Scolaire RIVIERA II</h1>
+        <p class="school-motto">Discipline • Travail • Succès</p>
+      </div>
+
+      <form id="form-login" class="auth-form" onsubmit="return false;">
+        <!-- LISTE DÉROULANTE DES UTILISATEURS ENREGISTRÉS -->
+        <div class="form-group">
+          <label for="login-user-select">Sélectionnez votre compte</label>
+          <select id="login-user-select" class="input-select" required>
+            <option value="Direction">👑 Direction (Administrateur)</option>
+            <!-- Peuplé dynamiquement par app.js -->
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label for="login-password">Code d'accès ou mot de passe</label>
+          <div class="password-input-wrapper">
+            <input type="password" id="login-password" placeholder="••••••••" required autocomplete="current-password">
+            <button type="button" class="btn-toggle-password" aria-label="Afficher le code d'accès" title="Afficher / Masquer le code">👁️</button>
+          </div>
+        </div>
+
+        <button type="submit" id="btn-login" class="btn btn-primary btn-block">Se connecter</button>
+        <p id="auth-error-msg" class="error-text" aria-live="polite"></p>
+      </form>
+    </div>
+  </section>
+
+  <!-- ========================================== -->
+  <!-- 2. APPLICATION PRINCIPALE                  -->
+  <!-- ========================================== -->
+  <div id="app-layout" class="app-layout d-none">
+
+    <!-- BARRE SUPÉRIEURE (RESPONSIVE) -->
+    <header class="app-topbar">
+      <div class="topbar-left">
+        <button id="btn-toggle-sidebar" class="btn-toggle-nav" aria-label="Menu" title="Menu">
+          <span class="icon-nav">☰</span> <span class="btn-nav-label">Menu</span>
+        </button>
+        <div class="topbar-brand">
+          <img src="assets/logo.jpeg" alt="Riviera II" class="topbar-logo">
+          <span class="brand-title">RIVIERA II</span>
+        </div>
+      </div>
+
+      <div class="topbar-right">
+        <!-- VOYANT SYNCHRO SUPABASE & ÉTAT RÉSEAU (HORS-LIGNE) -->
+        <span class="sync-indicator online" id="sync-status-badge" title="Connecté au cloud Supabase">
+          <span class="dot"></span> <span class="sync-text" id="sync-status-text">En direct</span>
+        </span>
+        <span id="offline-queue-badge" class="badge badge-warning d-none" title="Opérations en attente de synchronisation">0 en attente</span>
+
+        <!-- CLOCHE DE NOTIFICATIONS (ABSENCES, ANNONCES & ÉVALUATIONS) -->
+        <div class="notif-wrapper">
+          <button id="btn-notifications-bell" class="btn-icon-topbar" title="Notifications">
+            🔔 <span id="notif-badge-count" class="notif-badge d-none">0</span>
+          </button>
+          <div id="notif-dropdown-panel" class="notif-dropdown d-none">
+            <div class="notif-header">
+              <h4>Notifications récentes</h4>
+              <button id="btn-clear-notifs" class="btn-text-sm">Tout marquer comme lu</button>
+            </div>
+            <ul id="notif-list-items" class="notif-list">
+              <li class="notif-empty">Aucune nouvelle notification.</li>
+            </ul>
+          </div>
+        </div>
+
+        <span class="badge badge-period" id="topbar-current-trimester">1er Trimestre</span>
+        <div class="user-profile-badge">
+          <span id="user-display-name">Direction</span>
+          <small id="user-display-role" class="role-pill">Admin</small>
+        </div>
+        <button id="btn-open-pwd-modal-top" class="btn btn-sm btn-secondary" title="Modifier mon code d'accès">🔑</button>
+        <button id="btn-logout" class="btn btn-outline-danger btn-sm btn-logout" title="Se déconnecter">
+          <span class="btn-logout-icon">🚪</span>
+          <span class="btn-logout-text">Déconnexion</span>
+        </button>
+      </div>
+    </header>
+
+    <div class="app-body">
+
+      <!-- MENU LATÉRAL DE NAVIGATION -->
+      <aside id="app-sidebar" class="app-sidebar">
+        <nav class="sidebar-nav">
+          
+          <!-- MENU ADMINISTRATEUR -->
+          <div id="nav-group-admin" class="nav-group">
+            <p class="nav-group-title">ADMINISTRATION</p>
+            <button class="nav-link active" data-target="section-admin-dashboard">📊 Tableau de bord</button>
+            <button class="nav-link" data-target="section-admin-students">👨‍🎓 Élèves & Inscriptions</button>
+            <button class="nav-link" data-target="section-admin-teachers">👨‍🏫 Professeurs & Attributions</button>
+            <button class="nav-link" data-target="section-admin-classes">🏫 Classes & Matières</button>
+            <button class="nav-link" data-target="section-admin-calendar">📅 Calendrier & Évaluations</button>
+            <button class="nav-link" data-target="section-admin-timetables">🗓️ Emplois du Temps</button>
+            <button class="nav-link" data-target="section-admin-grades-view">🔍 Consultation des Notes</button>
+            <button class="nav-link" data-target="section-admin-bulletins">📄 Bulletins officiels</button>
+            <button class="nav-link" data-target="section-admin-attendance">🕒 Suivi des Absences</button>
+            <button class="nav-link" data-target="section-admin-derogations">⚖️ Demandes & Dérogations</button>
+            <button class="nav-link" data-target="section-admin-communications">📢 Communications & Annonces</button>
+            <button class="nav-link" data-target="section-admin-trimestres">⚙️ Trimestres & Paramètres</button>
+            <button class="nav-link" data-target="section-admin-backups">💾 Sauvegardes</button>
+          </div>
+
+          <!-- MENU PROFESSEUR -->
+          <div id="nav-group-teacher" class="nav-group d-none">
+            <p class="nav-group-title">ESPACE ENSEIGNANT</p>
+            <button class="nav-link active" data-target="section-teacher-dashboard">📋 Mon Tableau de bord</button>
+            <button class="nav-link" data-target="section-teacher-classes">🏫 Mes classes</button>
+            <button class="nav-link" data-target="section-teacher-timetable">🗓️ Mon Emploi du temps</button>
+            <button class="nav-link" data-target="section-teacher-prep-eval">📝 Programmer Évaluation (12h)</button>
+            <button class="nav-link" data-target="section-teacher-grades">✍️ Saisie des Notes</button>
+            <button class="nav-link" data-target="section-teacher-derogations">📄 Mes Dérogations</button>
+            <button class="nav-link" data-target="section-teacher-stats">📈 Statistiques des classes</button>
+            <button class="nav-link d-none" id="tab-teacher-bulletins" data-target="section-teacher-bulletins">📄 Bulletins de mes élèves</button>
+            <button class="nav-link" data-target="section-teacher-attendance">🕒 Signaler une Absence</button>
+            <button class="nav-link" data-target="section-teacher-profile">🔑 Mon Code d'accès</button>
+          </div>
+
+        </nav>
+      </aside>
+
+      <!-- CONTENU PRINCIPAL DES SECTIONS -->
+      <main class="app-main-content">
+
+        <!-- SECTION ADMIN : TABLEAU DE BORD -->
+        <section id="section-admin-dashboard" class="content-section">
+          <div class="section-header">
+            <h2>Tableau de bord de l'établissement</h2>
+            <p class="text-muted">Vue d'ensemble et suivi des opérations scolaires</p>
+          </div>
+
+          <div class="dashboard-kpi-grid">
+            <div class="kpi-card">
+              <h3>Total Élèves</h3>
+              <p class="kpi-value" id="kpi-total-students">0</p>
+              <span class="kpi-sub">Collège RIVIERA II</span>
+            </div>
+            <div class="kpi-card">
+              <h3>Professeurs</h3>
+              <p class="kpi-value" id="kpi-total-teachers">0</p>
+              <span class="kpi-sub">Comptes actifs</span>
+            </div>
+            <div class="kpi-card">
+              <h3>Classes actives</h3>
+              <p class="kpi-value" id="kpi-total-classes">4</p>
+              <span class="kpi-sub">6e, 5e, 4e, 3e</span>
+            </div>
+            <div class="kpi-card highlight">
+              <h3>Trimestre actif</h3>
+              <p class="kpi-value" id="kpi-active-trimester">1er</p>
+              <span class="kpi-sub" id="kpi-active-trimester-sub">Session ouverte</span>
+            </div>
+          </div>
+          
+          <!-- CARTE D'ACTION RAPIDE : DÉROGATIONS EN ATTENTE -->
+          <div class="card mb-4" id="card-dashboard-derogations">
+            <div class="card-header flex-between">
+              <h3>⚖️ Dérogations en attente d'approbation</h3>
+              <button class="btn btn-sm btn-secondary" onclick="document.querySelector('[data-target=\'section-admin-derogations\']').click();">Gérer tout</button>
+            </div>
+            <div class="card-body p-0">
+              <div class="table-responsive">
+                <table class="data-table">
+                  <thead>
+                    <tr>
+                      <th>Date</th>
+                      <th>Professeur</th>
+                      <th>Classe & Matière</th>
+                      <th>Date séance</th>
+                      <th>Motif</th>
+                      <th class="text-center">Action rapide</th>
+                    </tr>
+                  </thead>
+                  <tbody id="dashboard-pending-derogations-tbody">
+                    <tr><td colspan="6" class="text-center text-muted">Aucune dérogation en attente.</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+          <!-- CARTE D'ACTION RAPIDE : DEMANDES D'ÉVALUATIONS (ADMIN) -->
+          <div class="card mb-4" id="card-dashboard-eval-requests">
+            <div class="card-header flex-between">
+              <h3>📝 Demandes d'évaluations en attente (Délai 12h)</h3>
+              <button type="button" class="btn btn-sm btn-secondary" onclick="document.querySelector('[data-target=\'section-admin-derogations\']').click();">Gérer tout</button>
+            </div>
+            <div class="card-body p-0">
+              <div class="table-responsive">
+                <table class="data-table">
+                  <thead>
+                    <tr>
+                      <th>Date</th>
+                      <th>Professeur</th>
+                      <th>Classe & Matière</th>
+                      <th>Épreuve prévue</th>
+                      <th>Délai 12h</th>
+                      <th class="text-center">Décision rapide</th>
+                    </tr>
+                  </thead>
+                  <tbody id="dashboard-pending-evals-tbody">
+                    <tr><td colspan="6" class="text-center text-muted">Aucune demande d'évaluation en attente.</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+          <div class="grid-2-cols">
+            <div class="card">
+              <div class="card-header flex-between">
+                <h3>🕒 Dernières absences signalées</h3>
+                <button class="btn btn-sm btn-secondary" onclick="document.querySelector('[data-target=\'section-admin-attendance\']').click();">Voir tout</button>
+              </div>
+              <div class="card-body">
+                <ul id="dashboard-absences-stream" class="simple-list">
+                  <li class="text-muted">Aucune absence récente.</li>
+                </ul>
+              </div>
+            </div>
+
+            <div class="card">
+              <div class="card-header flex-between">
+                <h3>📢 Derniers communiqués de la Direction</h3>
+                <button class="btn btn-sm btn-primary" onclick="document.querySelector('[data-target=\'section-admin-communications\']').click();">+ Annonce</button>
+              </div>
+              <div class="card-body">
+                <ul id="dashboard-announcements-stream" class="simple-list">
+                  <li class="text-muted">Aucun communiqué publié.</li>
+                </ul>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- SECTION ADMIN : ÉLÈVES & INSCRIPTIONS -->
+        <section id="section-admin-students" class="content-section d-none">
+          <div class="section-header flex-between">
+            <div>
+              <h2>Gestion des Élèves</h2>
+              <p class="text-muted">Nom et Prénom distincts — Importation Excel et tri alphabétique</p>
+            </div>
+            <div class="action-buttons">
+              <button class="btn btn-secondary" id="btn-open-excel-modal">📥 Importer Excel</button>
+              <button class="btn btn-primary" id="btn-add-student-inline">+ Nouvel Élève</button>
+            </div>
+          </div>
+
+          <div class="filters-bar">
+            <input type="text" id="filter-student-search" placeholder="Rechercher par Nom, Prénom ou Matricule..." class="input-search">
+            <select id="filter-student-class" class="input-select">
+              <option value="">Toutes les classes</option>
+              <option value="6e">6e</option>
+              <option value="5e">5e</option>
+              <option value="4e">4e</option>
+              <option value="3e">3e</option>
+            </select>
+            <select id="filter-student-sort" class="input-select" style="max-width: 220px;" title="Changer l'ordre d'affichage">
+              <option value="mat-asc">🔢 Matricule (Croissant 0-9)</option>
+              <option value="mat-desc">🔢 Matricule (Décroissant 9-0)</option>
+              <option value="name-asc">🔤 Nom (A-Z)</option>
+              <option value="name-desc">🔤 Nom (Z-A)</option>
+            </select>
+          </div>
+
+          <div class="table-responsive">
+            <table class="data-table" id="table-students-admin">
+              <thead>
+                <tr>
+                  <th class="cursor-pointer" id="th-sort-matricule" title="Cliquer pour trier par Matricule">Matricule ⬍</th>
+                  <th class="cursor-pointer" id="th-sort-lastname" title="Cliquer pour trier par Nom">Nom ⬍</th>
+                  <th>Prénom</th>
+                  <th>Sexe</th>
+                  <th>Date de Naissance</th>
+                  <th>Lieu de Naissance</th>
+                  <th>Classe</th>
+                  <th>Statut</th>
+                  <th class="text-center">Actions</th>
+                </tr>
+              </thead>
+              <tbody id="students-table-body"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <!-- SECTION ADMIN : PROFESSEURS & ATTRIBUTIONS -->
+        <section id="section-admin-teachers" class="content-section d-none">
+          <div class="section-header flex-between">
+            <div>
+              <h2>Gestion des Professeurs & Attributions</h2>
+              <p class="text-muted">Affectez les classes et matières (codes d'accès masqués pour confidentialité)</p>
+            </div>
+            <button class="btn btn-primary" id="btn-add-teacher-inline">+ Nouveau Professeur</button>
+          </div>
+
+          <div class="table-responsive">
+            <table class="data-table" id="table-teachers-admin">
+              <thead>
+                <tr>
+                  <th>Nom & Prénoms</th>
+                  <th>Matières attribuées</th>
+                  <th>Classes attribuées</th>
+                  <th class="text-center">Attributions</th>
+                  <th class="text-center">Actions</th>
+                </tr>
+              </thead>
+              <tbody id="teachers-table-body"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <!-- SECTION ADMIN : CLASSES & MATIÈRES -->
+        <section id="section-admin-classes" class="content-section d-none">
+          <div class="section-header flex-between">
+            <div>
+              <h2>Classes, Matières & Coefficients</h2>
+              <p class="text-muted">Configuration officielle des coefficients appliqués aux bulletins</p>
+            </div>
+          </div>
+
+          <div class="grid-2-cols">
+            <div class="card">
+              <div class="card-header flex-between">
+                <h3>Classes officielles</h3>
+                <button class="btn btn-sm btn-primary" id="btn-add-class-item">+ Classe</button>
+              </div>
+              <div class="table-responsive">
+                <table class="data-table">
+                  <thead>
+                    <tr>
+                      <th>Appellation</th>
+                      <th class="text-center">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody id="classes-table-body"></tbody>
+                </table>
+              </div>
+            </div>
+
+            <div class="card">
+              <div class="card-header flex-between">
+                <h3>Matières & Coefficients</h3>
+                <button class="btn btn-sm btn-primary" id="btn-add-subject-item">+ Matière</button>
+              </div>
+              <div class="table-responsive">
+                <table class="data-table">
+                  <thead>
+                    <tr>
+                      <th>Matière</th>
+                      <th>Coefficient</th>
+                      <th class="text-center">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody id="subjects-table-body"></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- SECTION ADMIN : CALENDRIER & ÉVALUATIONS -->
+        <section id="section-admin-calendar" class="content-section d-none">
+          <div class="section-header flex-between">
+            <div>
+              <h2>Calendrier Scolaire & Évaluations</h2>
+              <p class="text-muted">Créez, modifiez ou annulez les évaluations. Synchronisation temps réel immédiate chez les professeurs.</p>
+            </div>
+            <button class="btn btn-primary" id="btn-open-eval-modal">+ Programmer une évaluation</button>
+          </div>
+
+          <div class="calendar-wrapper card">
+            <div class="calendar-nav-bar flex-between">
+              <button class="btn btn-secondary btn-sm" id="btn-cal-prev">◀ Mois précédent</button>
+              <h3 id="calendar-month-year-title">Chargement...</h3>
+              <button class="btn btn-secondary btn-sm" id="btn-cal-next">Mois suivant ▶</button>
+            </div>
+            <div class="calendar-weekdays-grid">
+              <div>Lun</div><div>Mar</div><div>Mer</div><div>Jeu</div><div>Ven</div><div>Sam</div><div>Dim</div>
+            </div>
+            <div id="calendar-days-grid" class="calendar-days-grid"></div>
+          </div>
+
+          <div class="card mt-4">
+            <div class="card-header">
+              <h3>Évaluations et événements enregistrés</h3>
+            </div>
+            <div class="table-responsive">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th>Date</th>
+                    <th>Heure</th>
+                    <th>Intitulé</th>
+                    <th>Type</th>
+                    <th>Classe</th>
+                    <th>Matière</th>
+                    <th>Créé par</th>
+                    <th>Statut</th>
+                    <th class="text-center">Action</th>
+                  </tr>
+                </thead>
+                <tbody id="evaluations-table-body">
+                  <tr><td colspan="9" class="text-center text-muted">Aucune évaluation enregistrée.</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <!-- SECTION ADMIN : EMPLOIS DU TEMPS -->
+        <section id="section-admin-timetables" class="content-section d-none">
+          <div class="section-header flex-between">
+            <div>
+              <h2>Gestion des Emplois du Temps</h2>
+              <p class="text-muted">Définissez et publiez les plannings par classe avec détection automatique des conflits d'horaires</p>
+            </div>
+            <button class="btn btn-primary" id="btn-open-timetable-modal">+ Ajouter un cours</button>
+          </div>
+
+          <div class="filters-bar-notes mb-3">
+            <div class="filter-item">
+              <label>Affichage :</label>
+              <select id="admin-timetable-view-mode" class="input-select">
+                <option value="teacher">👨‍🏫 Par Professeur</option>
+                <option value="class">🏫 Par Classe</option>
+              </select>
+            </div>
+            <div class="filter-item" id="box-filter-admin-tt-teacher">
+              <label>Professeur sélectionné :</label>
+              <select id="admin-timetable-teacher-select" class="input-select"></select>
+            </div>
+            <div class="filter-item d-none" id="box-filter-admin-tt-class">
+              <label>Classe sélectionnée :</label>
+              <select id="admin-timetable-class-select" class="input-select">
+                <option value="6e">Classe de 6e</option>
+                <option value="5e">Classe de 5e</option>
+                <option value="4e">Classe de 4e</option>
+                <option value="3e">Classe de 3e</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="table-responsive">
+              <table class="data-table timetable-grid-table">
+                <thead>
+                  <tr>
+                    <th>Créneau Horaire</th>
+                    <th>Lundi</th>
+                    <th>Mardi</th>
+                    <th>Mercredi</th>
+                    <th>Jeudi</th>
+                    <th>Vendredi</th>
+                    <th>Samedi</th>
+                  </tr>
+                </thead>
+                <tbody id="admin-timetable-tbody"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <!-- SECTION ADMIN : CONSULTATION DES NOTES -->
+        <section id="section-admin-grades-view" class="content-section d-none">
+          <div class="section-header flex-between">
+            <div>
+              <h2>Consultation Globale des Notes</h2>
+              <p class="text-muted">Vérification de l'ensemble des résultats réels saisis par matière et par classe</p>
+            </div>
+          </div>
+
+          <div class="filters-bar-notes">
+            <div class="filter-item">
+              <label>Classe :</label>
+              <select id="admin-view-class-select" class="input-select">
+                <option value="6e">6e</option>
+                <option value="5e">5e</option>
+                <option value="4e">4e</option>
+                <option value="3e">3e</option>
+              </select>
+            </div>
+            <div class="filter-item">
+              <label>Trimestre :</label>
+              <select id="admin-view-trimester-select" class="input-select">
+                <option value="1er Trimestre">1er Trimestre</option>
+                <option value="2ème Trimestre">2ème Trimestre</option>
+                <option value="3ème Trimestre">3ème Trimestre</option>
+              </select>
+            </div>
+            <!-- FILTRE DYNAMIQUE DES MATIÈRES RÉELLES DE LA BASE -->
+            <div class="filter-item">
+              <label>Matière :</label>
+              <select id="admin-view-subject-select" class="input-select">
+                <option value="">Toutes les matières</option>
+                <!-- Injecté dynamiquement par app.js depuis les matières enregistrées -->
+              </select>
+            </div>
+            <div class="filter-item filter-search-box">
+              <label>Rechercher élève :</label>
+              <input type="text" id="admin-view-student-search" placeholder="Nom, Prénom ou Matricule..." class="input-search">
+            </div>
+          </div>
+
+          <div class="table-responsive">
+            <table class="data-table" id="table-admin-grades-view">
+              <thead>
+                <tr>
+                  <th>Matricule</th>
+                  <th>Nom</th>
+                  <th>Prénom</th>
+                  <th>Matière</th>
+                  <th>Interro</th>
+                  <th>Devoir</th>
+                  <th>Moy. Classe</th>
+                  <th>Compo</th>
+                  <th>Moy. Géné</th>
+                  <th>Points</th>
+                  <th>Professeur</th>
+                </tr>
+              </thead>
+              <tbody id="admin-grades-view-tbody">
+                <tr><td colspan="11" class="text-center text-muted">Sélectionnez les filtres pour afficher les notes.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <!-- SECTION : BULLETINS OFFICIELS (SANS DÉCISION) -->
+        <section id="section-admin-bulletins" class="content-section d-none">
+          <div class="section-header flex-between no-print">
+            <div>
+              <h2>Panneau de Recherche & Génération des Bulletins</h2>
+              <p class="text-muted">Modèle togolais conforme avec calcul des moyennes et rangs automatiques</p>
+            </div>
+            <div class="action-buttons">
+              <button class="btn btn-primary" id="btn-print-bulletin">🖨️ Imprimer le bulletin PDF</button>
+            </div>
+          </div>
+
+          <div class="card p-3 mb-4 no-print">
+            <div class="filters-bar-notes mb-0">
+              <div class="filter-item">
+                <label>Classe :</label>
+                <select id="bulletin-filter-class" class="input-select">
+                  <option value="6e">6e</option>
+                  <option value="5e">5e</option>
+                  <option value="4e">4e</option>
+                  <option value="3e">3e</option>
+                </select>
+              </div>
+              <div class="filter-item">
+                <label>Trimestre :</label>
+                <select id="bulletin-filter-trimester" class="input-select">
+                  <option value="1er Trimestre">1er Trimestre</option>
+                  <option value="2ème Trimestre">2ème Trimestre</option>
+                  <option value="3ème Trimestre">3ème Trimestre</option>
+                </select>
+              </div>
+              <div class="filter-item filter-search-box">
+                <label>Sélectionnez ou recherchez l'élève :</label>
+                <select id="bulletin-select-student" class="input-select"></select>
+              </div>
+            </div>
+          </div>
+
+          <!-- FEUILLE OFFICIELLE DU BULLETIN TOGOLAIS (SEULE IMPRIMÉE) -->
+          <div class="bulletin-container" id="official-bulletin-sheet">
+            <div class="bulletin-header-grid">
+              <div class="header-col-left">
+                <h4 class="school-name">COMPLEXE SCOLAIRE RIVIERA II</h4>
+                <p class="school-motto-sub">Discipline - Travail - Succès</p>
+                <p class="school-address">Lomé (Togo)</p>
+                <p class="school-phone">Tél : (+228) 91 90 48 07</p>
+              </div>
+
+              <div class="header-col-center">
+                <img src="assets/logo.jpeg" alt="Logo Riviera II" class="bulletin-school-logo">
+              </div>
+
+              <div class="header-col-right">
+                <h4 class="republic-title">RÉPUBLIQUE TOGOLAISE</h4>
+                <p class="republic-motto">Travail-Liberté-Patrie</p>
+                <p class="ministry-name">Ministère des Enseignements Primaire et Secondaire</p>
+              </div>
+            </div>
+
+            <div class="bulletin-title-box">
+              <h3>Bulletin de Notes</h3>
+            </div>
+
+            <div class="bulletin-meta-grid">
+              <div><strong>Année Scolaire :</strong> <span id="b-meta-year">2026-2027</span></div>
+              <div><strong>Matricule :</strong> <span id="b-meta-matricule">-</span></div>
+
+              <div><strong>Trimestre :</strong> <span id="b-meta-trimester">1er Trimestre</span></div>
+              <div><strong>Num d'ordre :</strong> <span id="b-meta-order">001</span></div>
+
+              <div><strong>Niveau/Degré :</strong> <span>Collège</span></div>
+              <div><strong>Date de naissance :</strong> <span id="b-meta-dob">-</span></div>
+
+              <div><strong>Classe/Série :</strong> <span id="b-meta-class">-</span></div>
+              <div><strong>Lieu de naissance :</strong> <span id="b-meta-pob">-</span></div>
+
+              <div><strong>Effectif total :</strong> <span id="b-meta-total-eff">0</span></div>
+              <div><strong>Sexe :</strong> <span id="b-meta-gender">-</span></div>
+
+              <div><strong>Effectif classé :</strong> <span id="b-meta-ranked-eff">0</span></div>
+              <div><strong>Statut :</strong> <span id="b-meta-status">Régulier</span></div>
+            </div>
+
+            <div class="bulletin-student-banner" id="b-student-name">
+              -
+            </div>
+
+            <div class="grades-table-wrapper">
+              <img src="assets/logo.jpeg" alt="Filigrane Riviera II" class="bulletin-watermark-table">
+
+              <table class="bulletin-grades-table">
+                <thead>
+                  <tr>
+                    <th rowspan="2" class="col-matiere">MATIÈRE</th>
+                    <th colspan="3">NOTES DE CLASSE</th>
+                    <th rowspan="2">Note Compo</th>
+                    <th rowspan="2">Moy Géné</th>
+                    <th rowspan="2">Coef</th>
+                    <th rowspan="2">Points Obtenus</th>
+                    <th rowspan="2">Rang</th>
+                    <th rowspan="2" class="col-apprec">APPRÉCIATION</th>
+                    <th rowspan="2" class="col-prof">NOM ET SIGNATURE DU PROFESSEUR</th>
+                  </tr>
+                  <tr>
+                    <th>Interro</th>
+                    <th>Devoir</th>
+                    <th>moy</th>
+                  </tr>
+                </thead>
+                <tbody id="b-grades-tbody"></tbody>
+                <tfoot>
+                  <tr class="bulletin-summary-row">
+                    <td class="bold">Total Points :</td>
+                    <td colspan="3" id="b-total-points" class="bold text-center">-</td>
+                    <td class="bold">Total Coef :</td>
+                    <td id="b-total-coef" class="bold text-center">-</td>
+                    <td class="bold" colspan="2">Moyenne Trimestrielle :</td>
+                    <td id="b-trim-average" class="bold text-center">-</td>
+                    <td class="bold">Rang :</td>
+                    <td id="b-trim-rank" class="bold text-center">-</td>
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+
+            <table class="bulletin-recap-table">
+              <thead>
+                <tr>
+                  <th class="header-recap">RÉCAPITULATION</th>
+                  <th colspan="4" class="header-student">LES PERFORMANCES DE L'ÉLÈVE</th>
+                  <th colspan="3" class="header-class">LES PERFORMANCES DE LA CLASSE</th>
+                </tr>
+                <tr>
+                  <th>PÉRIODE</th>
+                  <th>Moyenne</th>
+                  <th>Rang</th>
+                  <th>Appréciation</th>
+                  <th>Absences (h)</th>
+                  <th>Plus faible moy</th>
+                  <th>Moy de la classe</th>
+                  <th>Plus forte moy</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><strong>1er Trimestre</strong></td>
+                  <td id="recap-t1-moy">-</td>
+                  <td id="recap-t1-rang">-</td>
+                  <td id="recap-t1-app">-</td>
+                  <td id="recap-t1-abs">0</td>
+                  <td id="recap-t1-min">-</td>
+                  <td id="recap-t1-avg">-</td>
+                  <td id="recap-t1-max">-</td>
+                </tr>
+                <tr>
+                  <td><strong>2e Trimestre</strong></td>
+                  <td id="recap-t2-moy">-</td>
+                  <td id="recap-t2-rang">-</td>
+                  <td id="recap-t2-app">-</td>
+                  <td id="recap-t2-abs">0</td>
+                  <td id="recap-t2-min">-</td>
+                  <td id="recap-t2-avg">-</td>
+                  <td id="recap-t2-max">-</td>
+                </tr>
+                <tr>
+                  <td><strong>3e Trimestre</strong></td>
+                  <td id="recap-t3-moy">-</td>
+                  <td id="recap-t3-rang">-</td>
+                  <td id="recap-t3-app">-</td>
+                  <td id="recap-t3-abs">0</td>
+                  <td id="recap-t3-min">-</td>
+                  <td id="recap-t3-avg">-</td>
+                  <td id="recap-t3-max">-</td>
+                </tr>
+                <tr class="bold-row">
+                  <td><strong>Année</strong></td>
+                  <td id="recap-an-moy">-</td>
+                  <td id="recap-an-rang">-</td>
+                  <td id="recap-an-app">-</td>
+                  <td id="recap-an-abs">0</td>
+                  <td id="recap-an-min">-</td>
+                  <td id="recap-an-avg">-</td>
+                  <td id="recap-an-max">-</td>
+                </tr>
+              </tbody>
+            </table>
+
+            <table class="bulletin-conduct-table">
+              <thead>
+                <tr>
+                  <th>Exclusion</th>
+                  <th>Blâme</th>
+                  <th>Avertissement</th>
+                  <th>Tableau d'honneur</th>
+                  <th>BEPC</th>
+                  <th>Fait à Lomé, le</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td></td>
+                  <td></td>
+                  <td></td>
+                  <td class="bold" id="bulletin-th-cell">-</td>
+                  <td></td>
+                  <td id="bulletin-date-bottom">___ / ___ / ______</td>
+                </tr>
+              </tbody>
+            </table>
+
+            <!-- SIGNATURES (AUCUNE SECTION DÉCISION COMME STRICTEMENT DEMANDÉ) -->
+            <div class="bulletin-signatures-grid">
+              <div class="sig-box">
+                <p><strong>Le Titulaire,</strong></p>
+                <div class="sig-space"></div>
+                <p class="sig-name" id="bulletin-titulaire-name">Le Professeur Principal</p>
+              </div>
+              <div class="sig-box">
+                <p><strong>La Direction,</strong></p>
+                <div class="sig-space"></div>
+                <p class="sig-name">Le Chef d'Établissement</p>
+              </div>
+            </div>
+
+            <p class="bulletin-footer-legal">
+              <em>Il n'est délivré qu'un seul et unique bulletin ; au besoin, en faire une copie certifiée conforme.</em>
+            </p>
+          </div>
+        </section>
+
+        <!-- SECTION ADMIN : ABSENCES -->
+        <section id="section-admin-attendance" class="content-section d-none">
+          <div class="section-header flex-between">
+            <div>
+              <h2>Suivi des Absences & Notifications</h2>
+              <p class="text-muted">Historique des absences enregistrées en direct par les enseignants</p>
+            </div>
+          </div>
+
+          <div class="table-responsive">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Date</th>
+                  <th>Élève</th>
+                  <th>Classe</th>
+                  <th>Durée</th>
+                  <th>Motif constaté</th>
+                  <th>Signalé par</th>
+                  <th>Statut</th>
+                </tr>
+              </thead>
+              <tbody id="admin-attendance-tbody"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <!-- SECTION ADMIN : DEMANDES & DÉROGATIONS -->
+        <section id="section-admin-derogations" class="content-section d-none">
+          <div class="section-header flex-between">
+            <div>
+              <h2>Gestion des Dérogations & Demandes d'Évaluations</h2>
+              <p class="text-muted">Acceptez ou refusez avec motif obligatoire (Application du délai automatique de 12 heures)</p>
+            </div>
+          </div>
+
+          <div class="card mb-4">
+            <div class="card-header">
+              <h3>📅 Demandes d'évaluations soumises par les enseignants</h3>
+            </div>
+            <div class="table-responsive">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th>Date demande</th>
+                    <th>Professeur</th>
+                    <th>Classe</th>
+                    <th>Matière</th>
+                    <th>Date prévue</th>
+                    <th>Compte à rebours 12h</th>
+                    <th>Statut</th>
+                    <th class="text-center">Action</th>
+                  </tr>
+                </thead>
+                <tbody id="admin-pending-evals-tbody"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-header">
+              <h3>📄 Demandes de dérogations des enseignants</h3>
+            </div>
+            <div class="table-responsive">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th>Date demande</th>
+                    <th>Professeur</th>
+                    <th>Classe & Matière</th>
+                    <th>Date événement</th>
+                    <th>Motif</th>
+                    <th>Statut</th>
+                    <th class="text-center">Action</th>
+                  </tr>
+                </thead>
+                <tbody id="admin-pending-derogs-tbody"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <!-- SECTION ADMIN : COMMUNICATIONS -->
+        <section id="section-admin-communications" class="content-section d-none">
+          <div class="section-header flex-between">
+            <div>
+              <h2>Communications & Annonces Officielles</h2>
+              <p class="text-muted">Diffusez des communiqués ciblés aux professeurs en temps réel</p>
+            </div>
+            <button class="btn btn-primary" id="btn-open-announcement-modal">+ Nouvelle Annonce</button>
+          </div>
+
+          <div class="table-responsive">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Date</th>
+                  <th>Titre</th>
+                  <th>Contenu du message</th>
+                  <th>Destinataires</th>
+                  <th>Auteur</th>
+                  <th class="text-center">Action</th>
+                </tr>
+              </thead>
+              <tbody id="announcements-admin-tbody"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <!-- SECTION ADMIN : TRIMESTRES & PARAMÈTRES SCOLAIRES -->
+        <section id="section-admin-trimestres" class="content-section d-none">
+          <div class="section-header flex-between">
+            <div>
+              <h2>Paramétrage des Trimestres & Clôture Automatique</h2>
+              <p class="text-muted">Définissez les dates limites de chaque trimestre. La saisie des notes se verrouille automatiquement.</p>
+            </div>
+          </div>
+
+          <div class="card mb-4">
+            <div class="card-header">
+              <h3>🗓️ Calendrier des 3 Trimestres</h3>
+            </div>
+            <div class="card-body">
+              <form id="form-admin-trimesters-dates">
+                <!-- 1ER TRIMESTRE -->
+                <div class="form-row mb-3 align-items-center" style="align-items: center; background: #f8fafc; padding: 12px; border-radius: 8px; border: 1px solid var(--border-color);">
+                  <div class="form-group flex-1 mb-0">
+                    <label class="bold">1er Trimestre (Début) :</label>
+                    <input type="date" id="trim-t1-start" class="input-select" value="2026-09-15" required>
+                  </div>
+                  <div class="form-group flex-1 mb-0">
+                    <label class="bold">1er Trimestre (Fin) :</label>
+                    <input type="date" id="trim-t1-end" class="input-select" value="2026-12-18" required>
+                  </div>
+                  <div class="form-group flex-1 mb-0 text-center">
+                    <label class="bold">Statut actuel :</label>
+                    <div><span id="badge-trim-t1-status" class="badge badge-success">Actif (Ouvert)</span></div>
+                  </div>
+                  <div class="form-group mb-0 text-center" style="min-width: 170px;">
+                    <label class="bold">Action Direction :</label>
+                    <div>
+                      <button type="button" class="btn btn-sm btn-outline-danger" id="btn-toggle-trim-1" onclick="toggleTrimesterLock(1)">🔒 Clôturer le 1er Trimestre</button>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- 2ÈME TRIMESTRE -->
+                <div class="form-row mb-3 align-items-center" style="align-items: center; background: #f8fafc; padding: 12px; border-radius: 8px; border: 1px solid var(--border-color);">
+                  <div class="form-group flex-1 mb-0">
+                    <label class="bold">2ème Trimestre (Début) :</label>
+                    <input type="date" id="trim-t2-start" class="input-select" value="2027-01-05" required>
+                  </div>
+                  <div class="form-group flex-1 mb-0">
+                    <label class="bold">2ème Trimestre (Fin) :</label>
+                    <input type="date" id="trim-t2-end" class="input-select" value="2027-04-09" required>
+                  </div>
+                  <div class="form-group flex-1 mb-0 text-center">
+                    <label class="bold">Statut actuel :</label>
+                    <div><span id="badge-trim-t2-status" class="badge badge-secondary">À venir</span></div>
+                  </div>
+                  <div class="form-group mb-0 text-center" style="min-width: 170px;">
+                    <label class="bold">Action Direction :</label>
+                    <div>
+                      <button type="button" class="btn btn-sm btn-outline-danger" id="btn-toggle-trim-2" onclick="toggleTrimesterLock(2)">🔒 Clôturer le 2ème Trimestre</button>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- 3ÈME TRIMESTRE -->
+                <div class="form-row mb-3 align-items-center" style="align-items: center; background: #f8fafc; padding: 12px; border-radius: 8px; border: 1px solid var(--border-color);">
+                  <div class="form-group flex-1 mb-0">
+                    <label class="bold">3ème Trimestre (Début) :</label>
+                    <input type="date" id="trim-t3-start" class="input-select" value="2027-04-20" required>
+                  </div>
+                  <div class="form-group flex-1 mb-0">
+                    <label class="bold">3ème Trimestre (Fin) :</label>
+                    <input type="date" id="trim-t3-end" class="input-select" value="2027-07-02" required>
+                  </div>
+                  <div class="form-group flex-1 mb-0 text-center">
+                    <label class="bold">Statut actuel :</label>
+                    <div><span id="badge-trim-t3-status" class="badge badge-secondary">À venir</span></div>
+                  </div>
+                  <div class="form-group mb-0 text-center" style="min-width: 170px;">
+                    <label class="bold">Action Direction :</label>
+                    <div>
+                      <button type="button" class="btn btn-sm btn-outline-danger" id="btn-toggle-trim-3" onclick="toggleTrimesterLock(3)">🔒 Clôturer le 3ème Trimestre</button>
+                    </div>
+                  </div>
+                </div>
+
+                <button type="submit" class="btn btn-primary mt-2">💾 Sauvegarder les dates de calendrier</button>
+              </form>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-header">
+              <h3>🖨️ Autorisation d'impression des bulletins côté enseignant</h3>
+            </div>
+            <div class="card-body">
+              <label class="checkbox-item">
+                <input type="checkbox" id="toggle-admin-allow-prof-bulletin-print">
+                <strong>Autoriser les professeurs à imprimer les bulletins de leurs propres classes</strong>
+              </label>
+              <p class="text-muted mt-2">Par défaut, cette autorisation est désactivée pour préserver la confidentialité.</p>
+            </div>
+          </div>
+        </section>
+
+        <!-- SECTION ADMIN : SAUVEGARDES -->
+        <section id="section-admin-backups" class="content-section d-none">
+          <div class="section-header">
+            <h2>Sauvegardes Quotidiennes & Restauration</h2>
+            <p class="text-muted">Export complet certifié et restauration sécurisée</p>
+          </div>
+
+          <div class="card">
+            <div class="card-body">
+              <p>Base principale : <strong class="text-success">Supabase Cloud (PostgreSQL)</strong></p>
+              <p>Dernière vérification d'intégrité : <strong id="backup-last-time">Aujourd'hui</strong></p>
+              <div class="mt-3 action-buttons">
+                <button class="btn btn-primary" id="btn-export-full-backup">💾 Télécharger la sauvegarde (.JSON)</button>
+                <button class="btn btn-outline-danger" id="btn-open-restore-modal">⚠️ Restaurer une sauvegarde</button>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- SECTION PROFESSEUR : TABLEAU DE BORD -->
+        <section id="section-teacher-dashboard" class="content-section d-none">
+          <div class="section-header">
+            <h2>Espace Enseignant</h2>
+            <p class="text-muted">Bienvenue, <strong id="teacher-dashboard-welcome">Professeur</strong></p>
+          </div>
+
+          <div class="dashboard-kpi-grid">
+            <div class="kpi-card">
+              <h3>Mes Classes</h3>
+              <p class="kpi-value" id="kpi-teacher-classes-count">0</p>
+              <span class="kpi-sub" id="kpi-teacher-classes-list">Classes assignées</span>
+            </div>
+            <div class="kpi-card">
+              <h3>Effectif Total Élèves</h3>
+              <p class="kpi-value" id="kpi-teacher-students-count">0</p>
+              <span class="kpi-sub">Élèves sous ma responsabilité</span>
+            </div>
+            <div class="kpi-card">
+              <h3>Matières Enseignées</h3>
+              <p class="kpi-value" id="kpi-teacher-subjects-count">0</p>
+              <span class="kpi-sub" id="kpi-teacher-subjects-list">Matières</span>
+            </div>
+            <div class="kpi-card highlight">
+              <h3>Évaluations à venir</h3>
+              <p class="kpi-value" id="kpi-teacher-evals-count">0</p>
+              <span class="kpi-sub">Programmées dans l'agenda</span>
+            </div>
+          </div>
+
+          <!-- CARTE SUIVI DES ÉVALUATIONS & DÉCISIONS (ENSEIGNANT) -->
+          <div class="card mt-4" id="card-teacher-dashboard-evals">
+            <div class="card-header flex-between">
+              <h3>📝 Mes Évaluations & Décisions de la Direction</h3>
+              <button type="button" class="btn btn-sm btn-primary" onclick="document.querySelector('[data-target=\'section-teacher-prep-eval\']').click();">+ Programmer une Évaluation</button>
+            </div>
+            <div class="card-body p-0">
+              <div class="table-responsive">
+                <table class="data-table">
+                  <thead>
+                    <tr>
+                      <th>Date demande</th>
+                      <th>Classe & Matière</th>
+                      <th>Date épreuve</th>
+                      <th>Type</th>
+                      <th>Décision Direction</th>
+                      <th>Motif / Remarque</th>
+                    </tr>
+                  </thead>
+                  <tbody id="teacher-dashboard-evals-tbody">
+                    <tr><td colspan="6" class="text-center text-muted">Aucune évaluation soumise pour le moment.</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+          <div class="card mt-4">
+            <div class="card-header">
+              <h3>📢 Communiqués et Annonces de la Direction</h3>
+            </div>
+            <div class="card-body">
+              <ul id="teacher-announcements-list" class="simple-list">
+                <li class="text-muted">Aucune nouvelle annonce.</li>
+              </ul>
+            </div>
+          </div>
+        </section>
+
+        <!-- SECTION PROFESSEUR : MES CLASSES -->
+        <section id="section-teacher-classes" class="content-section d-none">
+          <div class="section-header flex-between">
+            <div>
+              <h2>Mes Classes & Effectifs</h2>
+              <p class="text-muted">Consultez vos listes d'élèves actualisées automatiquement</p>
+            </div>
+          </div>
+
+          <div class="filters-bar">
+            <select id="teacher-classes-view-select" class="input-select"></select>
+          </div>
+
+          <div class="table-responsive">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>N°</th>
+                  <th>Matricule</th>
+                  <th>Nom</th>
+                  <th>Prénom</th>
+                  <th>Sexe</th>
+                  <th>Date & Lieu de Naissance</th>
+                  <th>Statut</th>
+                </tr>
+              </thead>
+              <tbody id="teacher-class-students-tbody"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <!-- SECTION PROFESSEUR : MON EMPLOI DU TEMPS -->
+        <section id="section-teacher-timetable" class="content-section d-none">
+          <div class="section-header flex-between">
+            <div>
+              <h2>Mon Emploi du Temps</h2>
+              <p class="text-muted">Consultez votre grille hebdomadaire officielle mise à jour par la Direction</p>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="table-responsive">
+              <table class="data-table timetable-grid-table">
+                <thead>
+                  <tr>
+                    <th>Créneau Horaire</th>
+                    <th>Lundi</th>
+                    <th>Mardi</th>
+                    <th>Mercredi</th>
+                    <th>Jeudi</th>
+                    <th>Vendredi</th>
+                    <th>Samedi</th>
+                  </tr>
+                </thead>
+                <tbody id="teacher-timetable-tbody"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <!-- SECTION PROFESSEUR : PRÉPARER INTERROGATION -->
+        <section id="section-teacher-prep-eval" class="content-section d-none">
+          <div class="section-header">
+            <h2>Programmer une Évaluation</h2>
+            <p class="text-muted">Transmise à la Direction avec <strong>validation automatique après un délai fixe de 12 heures</strong></p>
+          </div>
+
+          <div class="card" style="max-width: 650px;">
+            <div class="card-body">
+              <form id="form-teacher-prep-eval">
+                <div class="form-row">
+                  <div class="form-group flex-1">
+                    <label>Classe concernée :</label>
+                    <select id="prep-eval-class" class="input-select" required></select>
+                  </div>
+                  <div class="form-group flex-1">
+                    <label>Matière :</label>
+                    <select id="prep-eval-subject" class="input-select" required></select>
+                  </div>
+                </div>
+
+                <div class="form-row">
+                  <div class="form-group flex-1">
+                    <label>Date de l'évaluation :</label>
+                    <input type="date" id="prep-eval-date" required>
+                  </div>
+                  <div class="form-group flex-1">
+                    <label>Type :</label>
+                    <select id="prep-eval-type" class="input-select">
+                      <option value="Interrogation">Interrogation écrite</option>
+                      <option value="Devoir surveillé">Devoir surveillé</option>
+                      <option value="Composition">Composition</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div class="form-group">
+                  <label>Titre ou Sujet :</label>
+                  <input type="text" id="prep-eval-title" placeholder="Ex: Interrogation N°3 : Géométrie" required>
+                </div>
+
+                <div class="form-group">
+                  <label>Consignes ou Matériel autorisé :</label>
+                  <textarea id="prep-eval-instructions" rows="3" class="input-search" placeholder="Ex: Calculatrice interdite, prévoir règle graduée et compas..."></textarea>
+                </div>
+
+                <button type="submit" class="btn btn-primary">Soumettre l'évaluation (Délai 12h)</button>
+              </form>
+            </div>
+          </div>
+
+          <div class="card mt-4">
+            <div class="card-header">
+              <h3>Suivi de mes demandes d'évaluation</h3>
+            </div>
+            <div class="table-responsive">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th>Date demande</th>
+                    <th>Classe & Matière</th>
+                    <th>Date prévue</th>
+                    <th>Type</th>
+                    <th>Statut</th>
+                    <th>Motif (en cas de refus)</th>
+                  </tr>
+                </thead>
+                <tbody id="teacher-eval-requests-tbody"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <!-- SECTION PROFESSEUR : DÉROGATIONS -->
+        <section id="section-teacher-derogations" class="content-section d-none">
+          <div class="section-header flex-between">
+            <div>
+              <h2>Mes Dérogations & Permissions</h2>
+              <p class="text-muted">Programmez des rattrapages ou absences exceptionnelles à l'avance</p>
+            </div>
+            <button class="btn btn-primary" id="btn-open-derogation-modal">+ Nouvelle Dérogation</button>
+          </div>
+
+          <div class="card">
+            <div class="table-responsive">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th>Date demande</th>
+                    <th>Classe & Matière</th>
+                    <th>Date de la séance</th>
+                    <th>Motif</th>
+                    <th>Statut</th>
+                    <th>Motif Direction (si refus)</th>
+                  </tr>
+                </thead>
+                <tbody id="teacher-derogations-tbody"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <!-- SECTION PROFESSEUR : SAISIE DES NOTES -->
+        <section id="section-teacher-grades" class="content-section d-none">
+          <div class="section-header flex-between no-print">
+            <div>
+              <h2>Saisie et Gestion des Notes</h2>
+              <p class="text-muted">Remplissez les notes puis cliquez sur <strong>💾 Enregistrer les notes</strong> pour sauvegarder</p>
+            </div>
+            <div class="action-buttons">
+              <button class="btn btn-secondary" id="btn-print-teacher-gradesheet">📄 Imprimer la feuille de notes</button>
+              <button class="btn btn-primary" id="btn-save-teacher-grades">💾 Enregistrer les notes</button>
+            </div>
+          </div>
+
+          <div class="filters-bar-notes no-print">
+            <div class="filter-item">
+              <label>Classe :</label>
+              <select id="teacher-select-class" class="input-select"></select>
+            </div>
+            <div class="filter-item">
+              <label>Trimestre :</label>
+              <select id="teacher-select-trimester" class="input-select">
+                <option value="1er Trimestre">1er Trimestre</option>
+                <option value="2ème Trimestre">2ème Trimestre</option>
+                <option value="3ème Trimestre">3ème Trimestre</option>
+              </select>
+            </div>
+            <div class="filter-item">
+              <label>Matière :</label>
+              <select id="teacher-select-subject" class="input-select"></select>
+            </div>
+            <div class="filter-item filter-search-box">
+              <label>Rechercher élève :</label>
+              <input type="text" id="teacher-search-student" placeholder="Nom, Prénom ou Matricule..." class="input-search">
+            </div>
+          </div>
+
+          <div id="teacher-grades-lock-alert" class="card p-3 mb-3 d-none text-danger bold">
+            🔒 Ce trimestre est officiellement clôturé. La modification des notes est verrouillée.
+          </div>
+
+          <div class="table-responsive no-print">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>N°</th>
+                  <th>Matricule</th>
+                  <th>Nom</th>
+                  <th>Prénom</th>
+                  <th>Interro (/20)</th>
+                  <th>Devoir (/20)</th>
+                  <th>Compo (/20)</th>
+                  <th>Moy. Générale</th>
+                  <th>Appréciation suggérée</th>
+                </tr>
+              </thead>
+              <tbody id="teacher-grades-tbody"></tbody>
+            </table>
+          </div>
+
+          <!-- BORDEREAU / FEUILLE DE NOTES PROPRE POUR L'IMPRESSION A4 -->
+          <div id="printable-gradesheet" class="printable-gradesheet d-none">
+            <div class="gradesheet-header">
+              <div class="gs-header-brand">
+                <img src="assets/logo.jpeg" alt="Logo RIVIERA II" class="gs-logo">
+                <div>
+                  <h3>COMPLEXE SCOLAIRE RIVIERA II</h3>
+                  <p>Discipline • Travail • Succès — Lomé (Togo)</p>
+                </div>
+              </div>
+              <h2 class="gs-title">FEUILLE DE NOTES OFFICIELLE</h2>
+              <div class="gs-meta-grid">
+                <div><strong>Classe :</strong> <span id="gs-meta-class">-</span></div>
+                <div><strong>Discipline :</strong> <span id="gs-meta-subject">-</span></div>
+                <div><strong>Trimestre :</strong> <span id="gs-meta-trimester">-</span></div>
+                <div><strong>Enseignant :</strong> <span id="gs-meta-teacher">-</span></div>
+                <div><strong>Effectif :</strong> <span id="gs-meta-count">-</span></div>
+                <div><strong>Année :</strong> <span>2026-2027</span></div>
+              </div>
+            </div>
+
+            <table class="gradesheet-table">
+              <thead>
+                <tr>
+                  <th>N°</th>
+                  <th>Matricule</th>
+                  <th>Nom</th>
+                  <th>Prénom</th>
+                  <th>Interro (/20)</th>
+                  <th>Devoir (/20)</th>
+                  <th>Compo (/20)</th>
+                  <th>Moyenne</th>
+                  <th>Appréciation du Professeur</th>
+                </tr>
+              </thead>
+              <tbody id="gs-table-tbody"></tbody>
+            </table>
+
+            <div class="gradesheet-footer">
+              <div class="gs-sign-box">
+                <p>Date et Signature du Professeur :</p>
+                <div class="gs-space"></div>
+              </div>
+              <div class="gs-sign-box">
+                <p>Visa de la Direction des Études :</p>
+                <div class="gs-space"></div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- SECTION PROFESSEUR : STATISTIQUES DES CLASSES -->
+        <section id="section-teacher-stats" class="content-section d-none">
+          <div class="section-header flex-between">
+            <div>
+              <h2>Statistiques Pédagogiques</h2>
+              <p class="text-muted">Indicateurs réels de réussite, moyennes et classement de la classe</p>
+            </div>
+          </div>
+
+          <div class="filters-bar-notes mb-3">
+            <div class="filter-item">
+              <label>Classe :</label>
+              <select id="stats-select-class" class="input-select"></select>
+            </div>
+            <div class="filter-item">
+              <label>Matière :</label>
+              <select id="stats-select-subject" class="input-select"></select>
+            </div>
+            <div class="filter-item">
+              <label>Trimestre :</label>
+              <select id="stats-select-trimester" class="input-select">
+                <option value="1er Trimestre">1er Trimestre</option>
+                <option value="2ème Trimestre">2ème Trimestre</option>
+                <option value="3ème Trimestre">3ème Trimestre</option>
+              </select>
+            </div>
+          </div>
+
+          <!-- 4 INDICATEURS KPI EN TEMPS RÉEL -->
+          <div class="dashboard-kpi-grid">
+            <div class="kpi-card">
+              <h3>Moyenne de la classe</h3>
+              <p class="kpi-value" id="stats-class-avg">--</p>
+              <span class="kpi-sub" id="stats-class-eff">0 élève(s) noté(s)</span>
+            </div>
+            <div class="kpi-card">
+              <h3>Plus forte moyenne</h3>
+              <p class="kpi-value text-success" id="stats-class-max">--</p>
+              <span class="kpi-sub" id="stats-student-max">-</span>
+            </div>
+            <div class="kpi-card">
+              <h3>Plus faible moyenne</h3>
+              <p class="kpi-value text-danger" id="stats-class-min">--</p>
+              <span class="kpi-sub" id="stats-student-min">-</span>
+            </div>
+            <div class="kpi-card highlight">
+              <h3>Taux de Réussite (≥ 10/20)</h3>
+              <p class="kpi-value" id="stats-success-rate">0 %</p>
+              <span class="kpi-sub" id="stats-success-ratio">0 admis</span>
+            </div>
+          </div>
+
+          <!-- TABLEAU DÉTAILLÉ DU CLASSEMENT DE LA CLASSE -->
+          <div class="card mt-4">
+            <div class="card-header">
+              <h3>📊 Classement des élèves dans la discipline sélectionnée</h3>
+            </div>
+            <div class="card-body p-0">
+              <div class="table-responsive">
+                <table class="data-table">
+                  <thead>
+                    <tr>
+                      <th>Rang</th>
+                      <th>Matricule</th>
+                      <th>Nom & Prénoms</th>
+                      <th>Interro (/20)</th>
+                      <th>Devoir (/20)</th>
+                      <th>Compo (/20)</th>
+                      <th>Moyenne</th>
+                      <th>Appréciation</th>
+                    </tr>
+                  </thead>
+                  <tbody id="stats-students-tbody">
+                    <tr><td colspan="8" class="text-center text-muted">Sélectionnez une classe et une matière pour voir les statistiques.</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- SECTION PROFESSEUR : BULLETINS -->
+        <section id="section-teacher-bulletins" class="content-section d-none">
+          <div class="section-header flex-between">
+            <div>
+              <h2>Bulletins de mes classes</h2>
+              <p class="text-muted">Accédez au bulletin officiel de vos élèves (Autorisé par la Direction)</p>
+            </div>
+            <button class="btn btn-secondary" onclick="document.querySelector('[data-target=\'section-admin-bulletins\']').click();">👁️ Ouvrir la feuille de bulletin</button>
+          </div>
+          <div class="card">
+            <div class="card-body">
+              <p>Vous disposez de l'autorisation d'imprimer les bulletins pour les classes qui vous sont attribuées.</p>
+            </div>
+          </div>
+        </section>
+
+        <!-- SECTION PROFESSEUR : SIGNALER UNE ABSENCE -->
+        <section id="section-teacher-attendance" class="content-section d-none">
+          <div class="section-header">
+            <h2>Signaler une Absence</h2>
+            <p class="text-muted">L'administration recevra immédiatement une notification</p>
+          </div>
+
+          <div class="card" style="max-width: 600px;">
+            <div class="card-body">
+              <form id="form-teacher-attendance">
+                <div class="form-row">
+                  <div class="form-group flex-1">
+                    <label>Classe :</label>
+                    <select id="att-teacher-class-select" class="input-select" required></select>
+                  </div>
+                  <div class="form-group flex-1">
+                    <label>Élève :</label>
+                    <select id="att-teacher-student-select" class="input-select" required></select>
+                  </div>
+                </div>
+
+                <div class="form-row">
+                  <div class="form-group flex-1">
+                    <label>Date :</label>
+                    <input type="date" id="att-teacher-date" required>
+                  </div>
+                  <div class="form-group flex-1">
+                    <label>Durée (heures) :</label>
+                    <input type="number" id="att-teacher-hours" min="1" max="8" value="1" required>
+                  </div>
+                </div>
+
+                <div class="form-group">
+                  <label>Motif constaté :</label>
+                  <input type="text" id="att-teacher-reason" placeholder="Ex: Absent sans justification au cours de 8h">
+                </div>
+
+                <button type="submit" class="btn btn-primary">Transmettre l'absence à la Direction</button>
+              </form>
+            </div>
+          </div>
+        </section>
+
+        <!-- SECTION PROFESSEUR : CHANGER CODE D'ACCÈS -->
+        <section id="section-teacher-profile" class="content-section d-none">
+          <div class="section-header">
+            <h2>Modifier mon Code d'accès</h2>
+            <p class="text-muted">Procédure sécurisée : saisissez l'ancien code puis le nouveau</p>
+          </div>
+
+          <div class="card" style="max-width: 480px;">
+            <div class="card-body">
+              <form id="form-change-access-code">
+                <div class="form-group">
+                  <label>Ancien code d'accès :</label>
+                  <div class="password-input-wrapper">
+                    <input type="password" id="input-old-access-code" placeholder="Votre code actuel" required>
+                    <button type="button" class="btn-toggle-password" aria-label="Afficher le code d'accès" title="Afficher / Masquer le code">👁️</button>
+                  </div>
+                </div>
+                <div class="form-group">
+                  <label>Nouveau code d'accès :</label>
+                  <div class="password-input-wrapper">
+                    <input type="password" id="input-new-access-code" placeholder="Entrez au moins 4 caractères" required minlength="4">
+                    <button type="button" class="btn-toggle-password" aria-label="Afficher le code d'accès" title="Afficher / Masquer le code">👁️</button>
+                  </div>
+                </div>
+                <div class="form-group">
+                  <label>Confirmer le nouveau code :</label>
+                  <div class="password-input-wrapper">
+                    <input type="password" id="input-confirm-access-code" placeholder="Confirmez le nouveau code" required minlength="4">
+                    <button type="button" class="btn-toggle-password" aria-label="Afficher le code d'accès" title="Afficher / Masquer le code">👁️</button>
+                  </div>
+                </div>
+                <button type="submit" class="btn btn-primary">Mettre à jour mon code</button>
+                <p id="msg-code-change" class="text-success mt-3 d-none">✅ Votre code a été modifié avec succès !</p>
+                <p id="err-code-change" class="text-danger mt-3 d-none"></p>
+              </form>
+            </div>
+          </div>
+        </section>
+
+      </main>
+    </div>
+  </div>
+
+  <!-- ========================================== -->
+  <!-- MODALES DE L'APPLICATION                  -->
+  <!-- ========================================== -->
+
+  <!-- MODAL MODIFICATION ÉLÈVE (AVEC SUPPORT HORS-LIGNE) -->
+  <div id="modal-edit-student" class="modal-backdrop d-none">
+    <div class="modal-box">
+      <div class="modal-header flex-between">
+        <h3>✏️ Modifier la fiche élève</h3>
+        <button type="button" class="btn-close-modal" id="btn-close-edit-student-modal">✕</button>
+      </div>
+      <div class="modal-body">
+        <form id="form-edit-student">
+          <input type="hidden" id="edit-std-matricule-original">
+
+          <div class="form-row">
+            <div class="form-group flex-1">
+              <label>Matricule :</label>
+              <input type="text" id="edit-std-matricule" class="input-select" required>
+            </div>
+            <div class="form-group flex-1">
+              <label>Classe :</label>
+              <select id="edit-std-class" class="input-select" required></select>
+            </div>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group flex-1">
+              <label>Nom de famille :</label>
+              <input type="text" id="edit-std-lastname" class="input-select" required>
+            </div>
+            <div class="form-group flex-1">
+              <label>Prénom(s) :</label>
+              <input type="text" id="edit-std-firstname" class="input-select" required>
+            </div>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group flex-1">
+              <label>Sexe :</label>
+              <select id="edit-std-gender" class="input-select">
+                <option value="Féminin">Féminin</option>
+                <option value="Masculin">Masculin</option>
+              </select>
+            </div>
+            <div class="form-group flex-1">
+              <label>Statut :</label>
+              <select id="edit-std-status" class="input-select">
+                <option value="Passant">Passant</option>
+                <option value="Redoublant">Redoublant</option>
+                <option value="Nouveau">Nouveau</option>
+                <option value="Transféré">Transféré</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group flex-1">
+              <label>Date de Naissance :</label>
+              <input type="text" id="edit-std-dob" class="input-select" placeholder="Ex: 12 mars 2014">
+            </div>
+            <div class="form-group flex-1">
+              <label>Lieu de Naissance :</label>
+              <input type="text" id="edit-std-pob" class="input-select" placeholder="Ex: Lomé">
+            </div>
+          </div>
+
+          <div class="modal-footer flex-between mt-3 p-0" style="background: transparent; border: none;">
+            <button type="button" class="btn btn-secondary" id="btn-cancel-edit-student">Annuler</button>
+            <button type="submit" class="btn btn-primary" id="btn-submit-edit-student">💾 Enregistrer les modifications</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL AJOUT / MODIFICATION CLASSE -->
+  <div id="modal-manage-class" class="modal-backdrop d-none">
+    <div class="modal-box" style="max-width: 420px;">
+      <div class="modal-header flex-between">
+        <h3 id="modal-class-title">🏫 Gérer la Classe</h3>
+        <button type="button" class="btn-close-modal" id="btn-close-class-modal">✕</button>
+      </div>
+      <div class="modal-body">
+        <form id="form-manage-class">
+          <input type="hidden" id="manage-class-old-name">
+          <div class="form-group">
+            <label class="bold">Appellation de la classe :</label>
+            <input type="text" id="manage-class-name" class="input-select" placeholder="Ex: 6e, 5e, 4e A..." required>
+          </div>
+          <div class="modal-footer flex-between mt-3 p-0" style="background: transparent; border: none;">
+            <button type="button" class="btn btn-secondary" id="btn-cancel-class-modal">Annuler</button>
+            <button type="submit" class="btn btn-primary" id="btn-submit-class-modal">💾 Enregistrer la classe</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL AJOUT / MODIFICATION MATIÈRE & COEFFICIENT -->
+  <div id="modal-manage-subject" class="modal-backdrop d-none">
+    <div class="modal-box" style="max-width: 460px;">
+      <div class="modal-header flex-between">
+        <h3 id="modal-subject-title">📚 Gérer la Matière & Coefficient</h3>
+        <button type="button" class="btn-close-modal" id="btn-close-subject-modal">✕</button>
+      </div>
+      <div class="modal-body">
+        <form id="form-manage-subject">
+          <input type="hidden" id="manage-subject-old-name">
+          <div class="form-group">
+            <label class="bold">Nom de la matière :</label>
+            <input type="text" id="manage-subject-name" class="input-select" placeholder="Ex: Mathématiques, SVT..." required>
+          </div>
+          <div class="form-group">
+            <label class="bold">Coefficient officiel :</label>
+            <input type="number" id="manage-subject-coef" class="input-select" min="1" max="10" step="1" value="2" required>
+          </div>
+          <div class="modal-footer flex-between mt-3 p-0" style="background: transparent; border: none;">
+            <button type="button" class="btn btn-secondary" id="btn-cancel-subject-modal">Annuler</button>
+            <button type="submit" class="btn btn-primary" id="btn-submit-subject-modal">💾 Enregistrer la matière</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL DÉTAILS ET PROGRAMMATION AU CLIC D'UNE DATE DU CALENDRIER -->
+  <div id="modal-calendar-day" class="modal-backdrop d-none">
+    <div class="modal-box modal-lg">
+      <div class="modal-header flex-between">
+        <h3>📅 Journée du <span id="cal-day-modal-date-text" class="text-primary bold"></span></h3>
+        <button type="button" class="btn-close-modal" id="btn-close-cal-day-modal">✕</button>
+      </div>
+      <div class="modal-body">
+        <!-- 1. Liste des évaluations du jour sélectionné -->
+        <div class="mb-4">
+          <h4 class="bold mb-2">📋 Événements & Évaluations prévus ce jour :</h4>
+          <div class="table-responsive">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Intitulé</th>
+                  <th>Classe</th>
+                  <th>Matière</th>
+                  <th>Type</th>
+                  <th class="text-center">Action</th>
+                </tr>
+              </thead>
+              <tbody id="cal-day-modal-events-tbody">
+                <tr><td colspan="5" class="text-center text-muted">Aucune évaluation ce jour-là.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <hr class="mb-3" style="border: none; border-top: 1.5px solid var(--border-color);">
+
+        <!-- 2. Formulaire pour programmer directement pour cette date -->
+        <div>
+          <h4 class="bold mb-2">➕ Programmer une évaluation pour cette date :</h4>
+          <form id="form-cal-day-quick-eval">
+            <input type="hidden" id="cal-day-quick-date">
+
+            <div class="form-group mb-2">
+              <label>Intitulé de l'épreuve :</label>
+              <input type="text" id="cal-day-quick-title" class="input-select" placeholder="Ex: Devoir surveillé de Mathématiques" required>
+            </div>
+
+            <div class="form-row">
+              <div class="form-group flex-1">
+                <label>Classe :</label>
+                <select id="cal-day-quick-class" class="input-select" required></select>
+              </div>
+              <div class="form-group flex-1">
+                <label>Matière :</label>
+                <select id="cal-day-quick-subject" class="input-select" required></select>
+              </div>
+              <div class="form-group flex-1">
+                <label>Type :</label>
+                <select id="cal-day-quick-type" class="input-select">
+                  <option value="Devoir surveillé">Devoir surveillé</option>
+                  <option value="Interrogation">Interrogation</option>
+                  <option value="Composition">Composition</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="form-group mb-3">
+              <label>Consignes complémentaires ou matériel autorisé :</label>
+              <input type="text" id="cal-day-quick-instructions" class="input-select" placeholder="Ex: Calculatrice interdite, compas requis...">
+            </div>
+
+            <button type="submit" class="btn btn-primary btn-block">💾 Publier l'évaluation au calendrier</button>
+          </form>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL EXCEL IMPORT -->
+  <div id="modal-excel-import" class="modal-backdrop d-none">
+    <div class="modal-box modal-lg">
+      <div class="modal-header flex-between">
+        <h3>📥 Importer une liste d'élèves (Excel / CSV)</h3>
+        <button class="btn-close-modal" id="btn-close-excel-modal">✕</button>
+      </div>
+      <div class="modal-body">
+        <p class="text-muted">Sélectionnez votre fichier (.xlsx ou .csv). Détection automatique des colonnes et contrôle des doublons.</p>
+
+        <div class="file-drop-area mt-3">
+          <input type="file" id="excel-file-input" accept=".xlsx, .xls, .csv">
+          <p id="excel-filename-display">Glissez-déposez votre fichier ici ou cliquez pour parcourir</p>
+        </div>
+
+        <div id="excel-preview-container" class="mt-4 d-none">
+          <div class="flex-between mb-2">
+            <h4>Aperçu des données détectées (<span id="excel-rows-count">0</span> élèves)</h4>
+            <span id="excel-validation-badge" class="badge badge-success">Prêt pour import</span>
+          </div>
+          <div class="table-responsive max-h-300">
+            <table class="data-table" id="excel-preview-table">
+              <thead>
+                <tr>
+                  <th>Nom</th>
+                  <th>Prénom</th>
+                  <th>Sexe</th>
+                  <th>Date Naiss.</th>
+                  <th>Lieu Naiss.</th>
+                  <th>Classe</th>
+                  <th>Statut Détection</th>
+                </tr>
+              </thead>
+              <tbody id="excel-preview-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer flex-between">
+        <button class="btn btn-secondary" id="btn-cancel-excel">Annuler</button>
+        <button class="btn btn-primary" id="btn-confirm-excel-import" disabled>Confirmer l'importation dans Supabase</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL MODIFICATION PROFESSEUR & ATTRIBUTIONS -->
+  <div id="modal-teacher-assignment" class="modal-backdrop d-none">
+    <div class="modal-box">
+      <div class="modal-header flex-between">
+        <h3>✏️ Fiche & Attributions du Professeur</h3>
+        <button type="button" class="btn-close-modal" id="btn-close-assign-modal">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group mb-3">
+          <label class="bold" for="assign-teacher-name-input">Nom & Prénoms :</label>
+          <input type="text" id="assign-teacher-name-input" class="input-select" placeholder="Ex: M. Camara" required>
+        </div>
+
+        <div class="form-group">
+          <label class="bold">Classes attribuées (cocher) :</label>
+          <div id="assign-classes-checkboxes" class="checkboxes-grid"></div>
+        </div>
+
+        <div class="form-group mt-3">
+          <label class="bold">Matières attribuées (cocher) :</label>
+          <div id="assign-subjects-checkboxes" class="checkboxes-grid"></div>
+        </div>
+      </div>
+      <div class="modal-footer flex-between">
+        <button type="button" class="btn btn-secondary" id="btn-cancel-assign">Annuler</button>
+        <button type="button" class="btn btn-primary" id="btn-save-assign">💾 Enregistrer les modifications</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL PROGRAMMATION ÉVALUATION ADMIN -->
+  <div id="modal-eval-admin" class="modal-backdrop d-none">
+    <div class="modal-box">
+      <div class="modal-header flex-between">
+        <h3>📅 Programmer une Évaluation (Direction)</h3>
+        <button class="btn-close-modal" id="btn-close-eval-modal">✕</button>
+      </div>
+      <div class="modal-body">
+        <form id="form-admin-new-eval">
+          <div class="form-group">
+            <label>Intitulé :</label>
+            <input type="text" id="modal-eval-title" placeholder="Ex: Composition du 1er Trimestre" required>
+          </div>
+          <div class="form-row">
+            <div class="form-group flex-1">
+              <label>Classe :</label>
+              <select id="modal-eval-class" class="input-select" required></select>
+            </div>
+            <div class="form-group flex-1">
+              <label>Matière :</label>
+              <select id="modal-eval-subject" class="input-select" required></select>
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group flex-1">
+              <label>Date :</label>
+              <input type="date" id="modal-eval-date" required>
+            </div>
+            <div class="form-group flex-1">
+              <label>Type :</label>
+              <select id="modal-eval-type" class="input-select">
+                <option value="Composition">Composition</option>
+                <option value="Devoir surveillé">Devoir surveillé</option>
+                <option value="Interrogation">Interrogation</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-group">
+            <label>Instructions complémentaires :</label>
+            <input type="text" id="modal-eval-instructions" placeholder="Ex: Épreuve commune">
+          </div>
+          <button type="submit" class="btn btn-primary btn-block mt-3">Publier au calendrier</button>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL AJOUT / MODIFICATION EMPLOI DU TEMPS -->
+  <div id="modal-timetable-admin" class="modal-backdrop d-none">
+    <div class="modal-box">
+      <div class="modal-header flex-between">
+        <h3 id="tt-modal-title">🗓️ Gérer le cours</h3>
+        <button class="btn-close-modal" id="btn-close-timetable-modal">✕</button>
+      </div>
+      <div class="modal-body">
+        <form id="form-admin-timetable">
+          <input type="hidden" id="tt-modal-id" value="">
+          
+          <div class="form-row">
+            <div class="form-group flex-1">
+              <label>Classe :</label>
+              <select id="tt-modal-class" class="input-select" required></select>
+            </div>
+            <div class="form-group flex-1">
+              <label>Jour :</label>
+              <select id="tt-modal-day" class="input-select" required>
+                <option value="Lundi">Lundi</option>
+                <option value="Mardi">Mardi</option>
+                <option value="Mercredi">Mercredi</option>
+                <option value="Jeudi">Jeudi</option>
+                <option value="Vendredi">Vendredi</option>
+                <option value="Samedi">Samedi</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group flex-1">
+              <label>Créneau horaire :</label>
+              <select id="tt-modal-slot-preset" class="input-select">
+                <option value="07:00|08:55">07:00 - 08:55</option>
+                <option value="09:00|10:55">09:00 - 10:55</option>
+                <option value="11:10|12:05">11:10 - 12:05</option>
+                <option value="14:30|16:25">14:30 - 16:25</option>
+                <option value="16:30|17:25">16:30 - 17:25</option>
+                <option value="custom">Autre créneau personnalisé...</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="form-row" id="tt-custom-hours-row" style="display: none;">
+            <div class="form-group flex-1">
+              <label>Heure début :</label>
+              <input type="time" id="tt-modal-start" class="input-select" value="07:00" required>
+            </div>
+            <div class="form-group flex-1">
+              <label>Heure fin :</label>
+              <input type="time" id="tt-modal-end" class="input-select" value="08:55" required>
+            </div>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group flex-1">
+              <label>Matière :</label>
+              <select id="tt-modal-subject" class="input-select" required></select>
+            </div>
+            <div class="form-group flex-1">
+              <label>Professeur :</label>
+              <select id="tt-modal-teacher" class="input-select" required></select>
+            </div>
+          </div>
+
+          <p id="tt-conflict-warning" class="text-danger bold mt-2 d-none">⚠️ Conflit détecté : ce professeur ou cette classe a déjà un cours sur ce créneau !</p>
+
+          <div class="mt-3 flex-between">
+            <button type="button" id="btn-delete-course-modal" class="btn btn-outline-danger d-none">🗑️ Supprimer</button>
+            <button type="submit" id="btn-submit-course-modal" class="btn btn-primary flex-1">Enregistrer le cours</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL DÉROGATION PROFESSEUR -->
+  <div id="modal-derogation-teacher" class="modal-backdrop d-none">
+    <div class="modal-box">
+      <div class="modal-header flex-between">
+        <h3>📄 Soumettre une Dérogation</h3>
+        <button class="btn-close-modal" id="btn-close-derogation-modal">✕</button>
+      </div>
+      <div class="modal-body">
+        <form id="form-teacher-new-derogation">
+          <div class="form-row">
+            <div class="form-group flex-1">
+              <label>Classe :</label>
+              <select id="derog-class" class="input-select" required></select>
+            </div>
+            <div class="form-group flex-1">
+              <label>Matière :</label>
+              <select id="derog-subject" class="input-select" required></select>
+            </div>
+          </div>
+          <div class="form-group">
+            <label>Date de la séance concernée :</label>
+            <input type="date" id="derog-date" class="input-select" required>
+          </div>
+          <div class="form-group">
+            <label>Motif de la dérogation :</label>
+            <textarea id="derog-reason" rows="3" class="input-search" placeholder="Ex: Rattrapage du cours du vendredi..." required></textarea>
+          </div>
+          <button type="submit" class="btn btn-primary btn-block mt-3">Transmettre à la Direction</button>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL MOTIF DE REFUS DIRECTION -->
+  <div id="modal-refusal-reason" class="modal-backdrop d-none">
+    <div class="modal-box">
+      <div class="modal-header flex-between">
+        <h3>Motif de Refus Obligatoire</h3>
+        <button class="btn-close-modal" id="btn-close-refusal-modal">✕</button>
+      </div>
+      <div class="modal-body">
+        <input type="hidden" id="refusal-target-id">
+        <input type="hidden" id="refusal-target-type">
+        <div class="form-group">
+          <label>Veuillez préciser le motif de refus pour l'enseignant :</label>
+          <textarea id="refusal-reason-text" rows="3" class="input-search" placeholder="Ex: Date déjà occupée par une autre composition..." required></textarea>
+        </div>
+        <button id="btn-confirm-refusal" class="btn btn-outline-danger btn-block mt-3">Confirmer le refus</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL COMMUNICATIONS DIRECTION -->
+  <div id="modal-announcement-admin" class="modal-backdrop d-none">
+    <div class="modal-box">
+      <div class="modal-header flex-between">
+        <h3>📢 Publier une Annonce Ciblée</h3>
+        <button class="btn-close-modal" id="btn-close-announcement-modal">✕</button>
+      </div>
+      <div class="modal-body">
+        <form id="form-admin-new-announcement">
+          <div class="form-group">
+            <label>Titre de l'annonce :</label>
+            <input type="text" id="modal-ann-title" placeholder="Ex: Réunion pédagogique" required>
+          </div>
+          <div class="form-group">
+            <label>Destinataires ciblés :</label>
+            <select id="modal-ann-target" class="input-select">
+              <option value="ALL">📢 Tous les professeurs</option>
+              <option value="6e">Professeurs de 6e</option>
+              <option value="5e">Professeurs de 5e</option>
+              <option value="4e">Professeurs de 4e</option>
+              <option value="3e">Professeurs de 3e</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Message :</label>
+            <textarea id="modal-ann-content" rows="4" class="input-search" placeholder="Rédigez votre communiqué..." required></textarea>
+          </div>
+          <button type="submit" class="btn btn-primary btn-block mt-3">Diffuser l'annonce</button>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL RESTAURATION SAUVEGARDE -->
+  <div id="modal-restore-backup" class="modal-backdrop d-none">
+    <div class="modal-box">
+      <div class="modal-header flex-between">
+        <h3>⚠️ Restauration Manuelle de Sauvegarde</h3>
+        <button class="btn-close-modal" id="btn-close-restore-modal">✕</button>
+      </div>
+      <div class="modal-body">
+        <p class="text-danger bold">Attention : La restauration remplacera toutes les données actuelles par le fichier de secours sélectionné.</p>
+        <div class="form-group mt-3">
+          <label>Fichier de sauvegarde (.JSON) :</label>
+          <input type="file" id="restore-backup-file" accept=".json">
+        </div>
+        <div class="form-group">
+          <label>Confirmez votre code Administrateur :</label>
+          <div class="password-input-wrapper">
+            <input type="password" id="restore-admin-code" placeholder="••••••••">
+            <button type="button" class="btn-toggle-password" aria-label="Afficher le code d'accès" title="Afficher / Masquer le code">👁️</button>
+          </div>
+        </div>
+        <button id="btn-execute-restore" class="btn btn-outline-danger btn-block mt-3" disabled>Lancer la restauration</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL MOT DE PASSE TOPBAR -->
+  <div id="modal-top-change-pwd" class="modal-backdrop d-none">
+    <div class="modal-box">
+      <div class="modal-header flex-between">
+        <h3>🔑 Modifier mon code d'accès</h3>
+        <button class="btn-close-modal" id="btn-close-top-pwd">✕</button>
+      </div>
+      <div class="modal-body">
+        <form id="form-top-change-pwd">
+          <div class="form-group">
+            <label>Ancien code :</label>
+            <div class="password-input-wrapper">
+              <input type="password" id="top-old-code" required>
+              <button type="button" class="btn-toggle-password" aria-label="Afficher le code d'accès" title="Afficher / Masquer le code">👁️</button>
+            </div>
+          </div>
+          <div class="form-group">
+            <label>Nouveau code :</label>
+            <div class="password-input-wrapper">
+              <input type="password" id="top-new-code" required minlength="4">
+              <button type="button" class="btn-toggle-password" aria-label="Afficher le code d'accès" title="Afficher / Masquer le code">👁️</button>
+            </div>
+          </div>
+          <div class="form-group">
+            <label>Confirmer :</label>
+            <div class="password-input-wrapper">
+              <input type="password" id="top-confirm-code" required minlength="4">
+              <button type="button" class="btn-toggle-password" aria-label="Afficher le code d'accès" title="Afficher / Masquer le code">👁️</button>
+            </div>
+          </div>
+          <button type="submit" class="btn btn-primary btn-block mt-3">Enregistrer le nouveau code</button>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <script src="js/app.js"></script>
+</body>
+</html>
