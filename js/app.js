@@ -34,12 +34,18 @@ const APP_STATE = {
   currentUser: null,
   isOnline: navigator.onLine,
   offlineQueue: JSON.parse(localStorage.getItem("riviera_offline_queue") || "[]"),
-  trimestersConfig: [
-    { id: 1, name: "1er Trimestre", start: "2026-09-15", end: "2026-12-18", closed: false },
-    { id: 2, name: "2ème Trimestre", start: "2027-01-05", end: "2027-04-09", closed: false },
-    { id: 3, name: "3ème Trimestre", start: "2027-04-20", end: "2027-07-02", closed: false }
-  ],
-  allowProfBulletinPrint: false,
+  trimestersConfig: (() => {
+    try {
+      const cached = localStorage.getItem("riviera_cached_trimesters");
+      if (cached) return JSON.parse(cached);
+    } catch (e) {}
+    return [
+      { id: 1, name: "1er Trimestre", start: "2026-09-15", end: "2026-12-18", closed: false },
+      { id: 2, name: "2ème Trimestre", start: "2027-01-05", end: "2027-04-09", closed: false },
+      { id: 3, name: "3ème Trimestre", start: "2027-04-20", end: "2027-07-02", closed: false }
+    ];
+  })(),
+  allowProfBulletinPrint: localStorage.getItem("riviera_allow_prof_bulletin") === "true",
   classes: (() => {
     try {
       const cached = localStorage.getItem("riviera_cached_classes");
@@ -132,9 +138,27 @@ const APP_STATE = {
     } catch (e) {}
     return [];
   })(),
-  evalRequests: [],
-  announcements: [],
-  notifications: [],
+  evalRequests: (() => {
+    try {
+      const cached = localStorage.getItem("riviera_cached_eval_requests");
+      if (cached) return JSON.parse(cached);
+    } catch (e) {}
+    return [];
+  })(),
+  announcements: (() => {
+    try {
+      const cached = localStorage.getItem("riviera_cached_announcements");
+      if (cached) return JSON.parse(cached);
+    } catch (e) {}
+    return [];
+  })(),
+  notifications: (() => {
+    try {
+      const cached = localStorage.getItem("riviera_cached_notifications");
+      if (cached) return JSON.parse(cached);
+    } catch (e) {}
+    return [];
+  })(),
   calendarDate: new Date(),
   sortAscending: true,
   adminAccessCode: localStorage.getItem("riviera_admin_code") || "admin123"
@@ -205,8 +229,19 @@ document.addEventListener("DOMContentLoaded", () => {
 });
 
 // ==========================================================
-// RÉSEAU ET FILE HORS-LIGNE
+// RÉSEAU ET FILE HORS-LIGNE (SYNCHRONISATION COMPLÈTE)
 // ==========================================================
+let isFlushingQueue = false;
+
+function ensureSupabaseClient() {
+  if (!db && window.supabase && typeof window.supabase.createClient === "function") {
+    try {
+      db = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+    } catch (e) {}
+  }
+  return db;
+}
+
 function setupNetworkListeners() {
   window.addEventListener("online", () => {
     APP_STATE.isOnline = true;
@@ -217,6 +252,20 @@ function setupNetworkListeners() {
     APP_STATE.isOnline = false;
     updateNetworkIndicator(false);
   });
+
+  // Permet de cliquer sur le badge "X en attente" pour forcer la synchro ou débloquer une erreur
+  const queueBadge = document.getElementById("offline-queue-badge");
+  if (queueBadge) {
+    queueBadge.style.cursor = "pointer";
+    queueBadge.addEventListener("click", () => {
+      if (!navigator.onLine) {
+        alert("Vous êtes actuellement hors ligne. La synchronisation se fera automatiquement dès le retour d'Internet.");
+      } else {
+        flushOfflineQueue(true);
+      }
+    });
+  }
+
   updateNetworkIndicator(navigator.onLine);
 }
 
@@ -250,16 +299,18 @@ function queueOfflineAction(actionType, payload) {
   updateNetworkIndicator(APP_STATE.isOnline);
 }
 
-async function flushOfflineQueue() {
-  if (!db || !navigator.onLine || APP_STATE.offlineQueue.length === 0) return;
+async function flushOfflineQueue(isManualTrigger = false) {
+  ensureSupabaseClient();
+  if (isFlushingQueue || !db || !navigator.onLine || APP_STATE.offlineQueue.length === 0) return;
 
-  console.log(`🔄 Début de la synchronisation automatique de ${APP_STATE.offlineQueue.length} opération(s) en attente...`);
-
+  isFlushingQueue = true;
   const queue = [...APP_STATE.offlineQueue];
   APP_STATE.offlineQueue = [];
   localStorage.removeItem("riviera_offline_queue");
 
   const remainingQueue = [];
+  let syncedCount = 0;
+  let lastErrorMsg = "";
 
   for (const item of queue) {
     try {
@@ -279,18 +330,35 @@ async function flushOfflineQueue() {
       else if (item.actionType === "INSERT_DEROG") {
         const { error } = await db.from("derogations").insert([item.payload]);
         reqError = error;
+      } else if (item.actionType === "UPDATE_DEROG") {
+        const { id, ...fields } = item.payload;
+        const { error } = await db.from("derogations").update(fields).eq("id", id);
+        reqError = error;
       }
-      // 4. ÉVALUATIONS
+      // 4. ÉVALUATIONS (DEMANDES & CALENDRIER)
       else if (item.actionType === "INSERT_EVAL") {
         const { error } = await db.from("eval_requests").insert([item.payload]);
+        reqError = error;
+      } else if (item.actionType === "UPDATE_EVAL_REQ") {
+        const { id, ...fields } = item.payload;
+        const { error } = await db.from("eval_requests").update(fields).eq("id", id);
+        reqError = error;
+      } else if (item.actionType === "INSERT_CALENDAR_EVAL") {
+        const { error } = await db.from("evaluations").insert([item.payload]);
+        reqError = error;
+      } else if (item.actionType === "DELETE_CALENDAR_EVAL") {
+        const { error } = await db.from("evaluations").delete().eq("id", item.payload.id);
         reqError = error;
       }
       // 5. ANNONCES & COMMUNIQUÉS
       else if (item.actionType === "INSERT_ANNOUNCEMENT") {
         const { error } = await db.from("announcements").insert([item.payload]);
         reqError = error;
+      } else if (item.actionType === "DELETE_ANNOUNCEMENT") {
+        const { error } = await db.from("announcements").delete().eq("id", item.payload.id);
+        reqError = error;
       }
-      // 6. ÉLÈVES (AJOUT, MODIFICATION, SUPPRESSION)
+      // 6. ÉLÈVES
       else if (item.actionType === "INSERT_STUDENT") {
         const { error } = await db.from("students").insert([item.payload]);
         reqError = error;
@@ -308,7 +376,11 @@ async function flushOfflineQueue() {
         const { error } = await db.from("teachers").insert([item.payload]);
         reqError = error;
       } else if (item.actionType === "UPDATE_TEACHER") {
-        const { error } = await db.from("teachers").update(item.payload).eq("id", item.payload.id);
+        const { id, ...fields } = item.payload;
+        const { error } = await db.from("teachers").update(fields).eq("id", id);
+        reqError = error;
+      } else if (item.actionType === "DELETE_TEACHER") {
+        const { error } = await db.from("teachers").delete().eq("id", item.payload.id);
         reqError = error;
       }
       // 8. EMPLOIS DU TEMPS
@@ -316,34 +388,77 @@ async function flushOfflineQueue() {
         const { error } = await db.from("timetables").insert([item.payload]);
         reqError = error;
       } else if (item.actionType === "UPDATE_TIMETABLE") {
-        const { error } = await db.from("timetables").update(item.payload).eq("id", item.payload.id);
+        const { id, ...fields } = item.payload;
+        const { error } = await db.from("timetables").update(fields).eq("id", id);
         reqError = error;
       } else if (item.actionType === "DELETE_TIMETABLE") {
         const { error } = await db.from("timetables").delete().eq("id", item.payload.id);
         reqError = error;
       }
+      // 9. CLASSES, MATIÈRES & TRIMESTRES
+      else if (item.actionType === "INSERT_CLASS") {
+        const { error } = await db.from("classes").insert([item.payload]);
+        reqError = error;
+      } else if (item.actionType === "UPDATE_CLASS") {
+        const { error } = await db.from("classes").update({ name: item.payload.newName }).eq("name", item.payload.oldName);
+        reqError = error;
+      } else if (item.actionType === "DELETE_CLASS") {
+        const { error } = await db.from("classes").delete().eq("name", item.payload.name);
+        reqError = error;
+      } else if (item.actionType === "INSERT_SUBJECT") {
+        const { error } = await db.from("subjects").insert([item.payload]);
+        reqError = error;
+      } else if (item.actionType === "UPDATE_SUBJECT") {
+        const { error } = await db.from("subjects").update({ name: item.payload.newName, default_coef: item.payload.default_coef }).eq("name", item.payload.oldName);
+        reqError = error;
+      } else if (item.actionType === "DELETE_SUBJECT") {
+        const { error } = await db.from("subjects").delete().eq("name", item.payload.name);
+        reqError = error;
+      } else if (item.actionType === "UPSERT_TRIMESTER") {
+        const { error } = await db.from("trimesters_config").upsert(item.payload);
+        reqError = error;
+      }
 
       if (reqError) {
-        console.warn(`⚠️ Échec sur l'opération ${item.actionType}, replacée en attente :`, reqError);
+        console.warn(`⚠️ Échec sur ${item.actionType} :`, reqError);
+        lastErrorMsg = reqError.message || "Erreur base de données";
         remainingQueue.push(item);
+      } else {
+        syncedCount++;
       }
     } catch (err) {
+      lastErrorMsg = err.message || "Erreur réseau";
       remainingQueue.push(item);
     }
   }
 
-  APP_STATE.offlineQueue = remainingQueue;
-  if (remainingQueue.length > 0) {
-    localStorage.setItem("riviera_offline_queue", JSON.stringify(remainingQueue));
+  APP_STATE.offlineQueue = [...remainingQueue, ...APP_STATE.offlineQueue];
+  if (APP_STATE.offlineQueue.length > 0) {
+    localStorage.setItem("riviera_offline_queue", JSON.stringify(APP_STATE.offlineQueue));
   } else {
     localStorage.removeItem("riviera_offline_queue");
-    console.log("✅ Toutes les opérations hors-ligne ont été synchronisées avec Supabase avec succès !");
   }
 
+  isFlushingQueue = false;
   updateNetworkIndicator(navigator.onLine);
+
+  if (syncedCount > 0 && navigator.onLine) {
+    loadAllDataFromSupabase();
+  }
+
+  if (isManualTrigger) {
+    if (APP_STATE.offlineQueue.length === 0) {
+      alert("✅ Synchronisation terminée avec succès !");
+    } else if (lastErrorMsg) {
+      if (confirm(`⚠️ Une opération en attente est bloquée par Supabase :\n"${lastErrorMsg}"\n\nVoulez-vous vider cette file d'attente bloquée ?`)) {
+        APP_STATE.offlineQueue = [];
+        localStorage.removeItem("riviera_offline_queue");
+        updateNetworkIndicator(navigator.onLine);
+      }
+    }
+  }
 }
 
-// Surveillance périodique automatique toutes les 10 secondes pour vider la file dès que le réseau est stable
 setInterval(() => {
   if (navigator.onLine && APP_STATE.offlineQueue && APP_STATE.offlineQueue.length > 0) {
     flushOfflineQueue();
@@ -513,8 +628,14 @@ async function loadAllDataFromSupabase() {
       db.from("attendance").select("*").order("date", { ascending: false })
     ]);
 
-    if (clsRes.data?.length) APP_STATE.classes = clsRes.data.map(c => c.name);
-    if (subRes.data?.length) APP_STATE.subjects = subRes.data.map(s => ({ name: s.name, coef: s.default_coef }));
+    if (clsRes.data?.length) {
+      APP_STATE.classes = clsRes.data.map(c => c.name);
+      try { localStorage.setItem("riviera_cached_classes", JSON.stringify(APP_STATE.classes)); } catch (e) {}
+    }
+    if (subRes.data?.length) {
+      APP_STATE.subjects = subRes.data.map(s => ({ name: s.name, coef: s.default_coef }));
+      try { localStorage.setItem("riviera_cached_subjects", JSON.stringify(APP_STATE.subjects)); } catch (e) {}
+    }
 
     if (tchRes.data && !tchRes.error && tchRes.data.length > 0) {
       APP_STATE.teachers = tchRes.data;
@@ -593,8 +714,14 @@ async function loadAllDataFromSupabase() {
       try { localStorage.setItem("riviera_cached_derogations", JSON.stringify(APP_STATE.derogations)); } catch (e) {}
     }
 
-    if (annRes.data) APP_STATE.announcements = annRes.data;
-    if (notifRes.data) APP_STATE.notifications = notifRes.data;
+    if (annRes.data) {
+      APP_STATE.announcements = annRes.data;
+      try { localStorage.setItem("riviera_cached_announcements", JSON.stringify(APP_STATE.announcements)); } catch (e) {}
+    }
+    if (notifRes.data) {
+      APP_STATE.notifications = notifRes.data;
+      try { localStorage.setItem("riviera_cached_notifications", JSON.stringify(APP_STATE.notifications)); } catch (e) {}
+    }
 
     if (trimRes.data?.length) {
       let cachedTrims = [];
@@ -607,6 +734,7 @@ async function loadAllDataFromSupabase() {
           closed: local && local.closed !== undefined ? local.closed : Boolean(remote.closed)
         };
       });
+      try { localStorage.setItem("riviera_cached_trimesters", JSON.stringify(APP_STATE.trimestersConfig)); } catch (e) {}
     }
 
     detectActiveTrimester();
@@ -969,6 +1097,7 @@ function setupTimetableSystem() {
       teacher_name: teacher
     };
 
+    ensureSupabaseClient();
     if (courseId) {
       // Modification d'un cours existant
       const numericId = isNaN(courseId) ? courseId : Number(courseId);
@@ -980,7 +1109,11 @@ function setupTimetableSystem() {
       if (db && navigator.onLine) {
         try {
           const { error } = await db.from("timetables").update(payload).eq("id", numericId);
-          if (error) queueOfflineAction("UPDATE_TIMETABLE", { id: numericId, ...payload });
+          if (error && /fetch|network|offline|timeout/i.test(error.message || "")) {
+            queueOfflineAction("UPDATE_TIMETABLE", { id: numericId, ...payload });
+          } else if (error) {
+            alert("⚠️ Erreur Supabase (modification cours) : " + error.message);
+          }
         } catch (err) {
           queueOfflineAction("UPDATE_TIMETABLE", { id: numericId, ...payload });
         }
@@ -994,13 +1127,22 @@ function setupTimetableSystem() {
         try {
           const { data, error } = await db.from("timetables").insert([payload]).select();
           if (error) {
-            console.error("❌ ERREUR SUPABASE (Insertion cours) :", error);
-            queueOfflineAction("INSERT_TIMETABLE", payload);
+            if (/fetch|network|offline|timeout/i.test(error.message || "")) {
+              queueOfflineAction("INSERT_TIMETABLE", payload);
+            } else {
+              const { error: insErr } = await db.from("timetables").insert([payload]);
+              if (insErr) {
+                if (/fetch|network|offline|timeout/i.test(insErr.message || "")) {
+                  queueOfflineAction("INSERT_TIMETABLE", payload);
+                } else {
+                  alert("⚠️ Erreur Supabase (ajout cours) : " + insErr.message);
+                }
+              }
+            }
           } else if (data && data.length > 0) {
             tempId = data[0].id;
           }
         } catch (err) {
-          console.error("❌ Erreur réseau ou exception :", err);
           queueOfflineAction("INSERT_TIMETABLE", payload);
         }
       } else {
@@ -1706,7 +1848,12 @@ window.deleteStudentConfirmed = async function(matricule) {
 
 window.deleteTeacherConfirmed = async function(teacherId) {
   if (confirm("Confirmez-vous la suppression de ce professeur ?")) {
-    if (db) await db.from("teachers").delete().eq("id", teacherId);
+    ensureSupabaseClient();
+    if (db && navigator.onLine) {
+      try { await db.from("teachers").delete().eq("id", teacherId); } catch (e) { queueOfflineAction("DELETE_TEACHER", { id: teacherId }); }
+    } else {
+      queueOfflineAction("DELETE_TEACHER", { id: teacherId });
+    }
     APP_STATE.teachers = APP_STATE.teachers.filter(x => x.id !== teacherId);
     try { localStorage.setItem("riviera_cached_teachers", JSON.stringify(APP_STATE.teachers)); } catch (e) {}
     refreshUI();
@@ -1796,9 +1943,11 @@ window.openClassModal = function(className = null) {
 window.deleteClassConfirmed = async function(className) {
   if (confirm(`Confirmez-vous la suppression de la classe "${className}" ?`)) {
     APP_STATE.classes = APP_STATE.classes.filter(c => c !== className);
-
+    ensureSupabaseClient();
     if (db && navigator.onLine) {
-      try { await db.from("classes").delete().eq("name", className); } catch (e) {}
+      try { await db.from("classes").delete().eq("name", className); } catch (e) { queueOfflineAction("DELETE_CLASS", { name: className }); }
+    } else {
+      queueOfflineAction("DELETE_CLASS", { name: className });
     }
 
     try { localStorage.setItem("riviera_cached_classes", JSON.stringify(APP_STATE.classes)); } catch (e) {}
@@ -1836,9 +1985,11 @@ window.openSubjectModal = function(subjectName = null) {
 window.deleteSubjectConfirmed = async function(subjectName) {
   if (confirm(`Confirmez-vous la suppression de la matière "${subjectName}" ?`)) {
     APP_STATE.subjects = APP_STATE.subjects.filter(s => s.name !== subjectName);
-
+    ensureSupabaseClient();
     if (db && navigator.onLine) {
-      try { await db.from("subjects").delete().eq("name", subjectName); } catch (e) {}
+      try { await db.from("subjects").delete().eq("name", subjectName); } catch (e) { queueOfflineAction("DELETE_SUBJECT", { name: subjectName }); }
+    } else {
+      queueOfflineAction("DELETE_SUBJECT", { name: subjectName });
     }
 
     try { localStorage.setItem("riviera_cached_subjects", JSON.stringify(APP_STATE.subjects)); } catch (e) {}
@@ -1880,15 +2031,20 @@ function setupClassAndSubjectManagement() {
         if (s.class === oldName) s.class = newName;
       });
 
+      ensureSupabaseClient();
       if (db && navigator.onLine) {
-        try { await db.from("classes").update({ name: newName }).eq("name", oldName); } catch (err) {}
+        try { await db.from("classes").update({ name: newName }).eq("name", oldName); } catch (err) { queueOfflineAction("UPDATE_CLASS", { oldName, newName }); }
+      } else {
+        queueOfflineAction("UPDATE_CLASS", { oldName, newName });
       }
     } else {
-      // Ajout
       if (!APP_STATE.classes.includes(newName)) {
         APP_STATE.classes.push(newName);
+        ensureSupabaseClient();
         if (db && navigator.onLine) {
-          try { await db.from("classes").insert([{ name: newName }]); } catch (err) {}
+          try { await db.from("classes").insert([{ name: newName }]); } catch (err) { queueOfflineAction("INSERT_CLASS", { name: newName }); }
+        } else {
+          queueOfflineAction("INSERT_CLASS", { name: newName });
         }
       }
     }
@@ -1929,16 +2085,21 @@ function setupClassAndSubjectManagement() {
         sub.name = newName;
         sub.coef = newCoef;
       }
+      ensureSupabaseClient();
       if (db && navigator.onLine) {
-        try { await db.from("subjects").update({ name: newName, default_coef: newCoef }).eq("name", oldName); } catch (err) {}
+        try { await db.from("subjects").update({ name: newName, default_coef: newCoef }).eq("name", oldName); } catch (err) { queueOfflineAction("UPDATE_SUBJECT", { oldName, newName, default_coef: newCoef }); }
+      } else {
+        queueOfflineAction("UPDATE_SUBJECT", { oldName, newName, default_coef: newCoef });
       }
     } else {
-      // Ajout
       const exists = APP_STATE.subjects.some(s => s.name === newName);
       if (!exists) {
         APP_STATE.subjects.push({ name: newName, coef: newCoef });
+        ensureSupabaseClient();
         if (db && navigator.onLine) {
-          try { await db.from("subjects").insert([{ name: newName, default_coef: newCoef }]); } catch (err) {}
+          try { await db.from("subjects").insert([{ name: newName, default_coef: newCoef }]); } catch (err) { queueOfflineAction("INSERT_SUBJECT", { name: newName, default_coef: newCoef }); }
+        } else {
+          queueOfflineAction("INSERT_SUBJECT", { name: newName, default_coef: newCoef });
         }
       }
     }
@@ -2934,7 +3095,8 @@ function setupTeacherEvaluationPrep() {
     }
 
     APP_STATE.evalRequests.unshift(newRequest);
-    renderTeacherEvalRequests();
+ try { localStorage.setItem("riviera_cached_eval_requests", JSON.stringify(APP_STATE.evalRequests)); } catch (err) {}
+ renderTeacherEvalRequests();
     renderAdminPendingRequests();
     alert("✅ Évaluation soumise à la Direction (Validation automatique dans 12h).");
     e.target.reset();
@@ -3395,11 +3557,13 @@ document.getElementById("btn-confirm-refusal")?.addEventListener("click", async 
 function setupTrimesterSettings() {
   const form = document.getElementById("form-admin-trimesters-dates");
   const toggleBulletin = document.getElementById("toggle-admin-allow-prof-bulletin-print");
+if (toggleBulletin) toggleBulletin.checked = APP_STATE.allowProfBulletinPrint;
 
-  toggleBulletin?.addEventListener("change", (e) => {
-    APP_STATE.allowProfBulletinPrint = e.target.checked;
-    updateTeacherBulletinNavVisibility();
-  });
+toggleBulletin?.addEventListener("change", (e) => {
+ APP_STATE.allowProfBulletinPrint = e.target.checked;
+ try { localStorage.setItem("riviera_allow_prof_bulletin", String(APP_STATE.allowProfBulletinPrint)); } catch (err) {}
+ updateTeacherBulletinNavVisibility();
+});
 
   form?.addEventListener("submit", async (e) => {
     e.preventDefault();
@@ -3455,11 +3619,14 @@ window.toggleTrimesterLock = async function(trimId) {
   } catch (e) {}
 
   // Synchronisation avec Supabase si connecté
-  if (db && navigator.onLine) {
-    try {
-      await db.from("trimesters_config").upsert(trim);
-    } catch (e) {}
-  }
+ensureSupabaseClient();
+if (db && navigator.onLine) {
+ try {
+   await db.from("trimesters_config").upsert(trim);
+ } catch (e) { queueOfflineAction("UPSERT_TRIMESTER", trim); }
+} else {
+ queueOfflineAction("UPSERT_TRIMESTER", trim);
+}
 
   // Actualisation immédiate sur la fenêtre en cours
   detectActiveTrimester();
@@ -3966,9 +4133,12 @@ function renderAnnouncements() {
 
 window.deleteAnnouncement = async function(id) {
   if (confirm("Confirmez-vous la suppression de ce communiqué ?")) {
-    if (db && navigator.onLine) {
-      try { await db.from("announcements").delete().eq("id", id); } catch (e) {}
-    }
+    ensureSupabaseClient();
+ if (db && navigator.onLine) {
+   try { await db.from("announcements").delete().eq("id", id); } catch (e) { queueOfflineAction("DELETE_ANNOUNCEMENT", { id }); }
+ } else {
+   queueOfflineAction("DELETE_ANNOUNCEMENT", { id });
+ }
 
     APP_STATE.announcements = APP_STATE.announcements.filter(x => x.id !== id);
     try {
@@ -4267,10 +4437,12 @@ function refreshDayModalEvents(dateStr) {
 
 // Suppression d'une évaluation depuis la modale du jour
 window.deleteEvaluationFromModal = async function(id, dateStr) {
-  if (confirm("Confirmez-vous la suppression de cette évaluation ?")) {
-    if (db && navigator.onLine) {
-      try { await db.from("evaluations").delete().eq("id", id); } catch (e) {}
-    }
+  ensureSupabaseClient();
+ if (db && navigator.onLine) {
+   try { await db.from("evaluations").delete().eq("id", id); } catch (e) { queueOfflineAction("DELETE_CALENDAR_EVAL", { id }); }
+ } else {
+   queueOfflineAction("DELETE_CALENDAR_EVAL", { id });
+ }
 
     APP_STATE.evaluations = APP_STATE.evaluations.filter(x => x.id !== id);
     try { localStorage.setItem("riviera_cached_evaluations", JSON.stringify(APP_STATE.evaluations)); } catch (e) {}
@@ -4394,16 +4566,15 @@ function setupTeacherAttendanceForm() {
     let saveSuccess = true;
     let errorDetail = "";
 
+    ensureSupabaseClient();
     if (db && navigator.onLine) {
       try {
-        // Enregistrement garanti dans la table attendance
         const { error: attError } = await db.from("attendance").insert([record]);
         if (attError) {
           saveSuccess = false;
           errorDetail = attError.message;
-          console.error("❌ Erreur Supabase (attendance) :", attError);
+          queueOfflineAction("INSERT_ATTENDANCE", record);
         } else {
-          // Création de la notification en direct pour l'administrateur
           await db.from("notifications").insert([{
             type: "ABSENCE",
             message: `${stdName} (${cls}) : ${hours}h d'absence signalée(s) le ${date}.`,
@@ -4413,7 +4584,11 @@ function setupTeacherAttendanceForm() {
       } catch (err) {
         saveSuccess = false;
         errorDetail = err.message;
+        queueOfflineAction("INSERT_ATTENDANCE", record);
       }
+    } else {
+      saveSuccess = false;
+      queueOfflineAction("INSERT_ATTENDANCE", record);
     }
 
     // Ajout dans l'état local
