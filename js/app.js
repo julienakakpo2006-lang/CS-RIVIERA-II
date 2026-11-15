@@ -4449,7 +4449,6 @@ window.deleteEvaluationFromModal = async function(id, dateStr) {
 
     renderCalendar();
     refreshDayModalEvents(dateStr);
-  }
 };
 
 function renderCalendar() {
