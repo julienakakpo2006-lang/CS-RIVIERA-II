@@ -1025,6 +1025,10 @@ body {
   border-radius: 16px;
   max-width: 550px;
   width: 100%;
+  max-height: 90vh;
+  max-height: 90dvh;
+  display: flex;
+  flex-direction: column;
   box-shadow: 0 25px 60px rgba(0, 0, 0, 0.3);
   overflow: hidden;
   animation: modalPop 0.2s ease-out;
@@ -1037,17 +1041,20 @@ body {
 }
 
 .modal-header {
-  padding: 16px 20px;
+  padding: 14px 18px;
   border-bottom: 1.5px solid var(--border-color);
+  flex-shrink: 0;
+  flex-wrap: nowrap;
 }
-.modal-header h3 { font-size: 1.15rem; color: var(--primary-deep); }
-.btn-close-modal { background: none; border: none; font-size: 1.3rem; cursor: pointer; color: var(--text-muted); }
+.modal-header h3 { font-size: 1.1rem; color: var(--primary-deep); }
+.btn-close-modal { background: none; border: none; font-size: 1.3rem; cursor: pointer; color: var(--text-muted); flex-shrink: 0; }
 
-.modal-body { padding: 20px; max-height: 70vh; overflow-y: auto; }
+.modal-body { padding: 18px; flex: 1; min-height: 0; overflow-y: auto; }
 .modal-footer {
-  padding: 14px 20px;
+  padding: 12px 18px;
   border-top: 1.5px solid var(--border-color);
   background-color: #f8fafc;
+  flex-shrink: 0;
 }
 
 .file-drop-area {
@@ -1072,15 +1079,26 @@ body {
 .checkboxes-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
-  gap: 10px;
+  gap: 8px 12px;
   margin-top: 8px;
 }
-.checkbox-item {
+.checkbox-item,
+.form-group label.checkbox-item {
   display: flex;
   align-items: center;
   gap: 8px;
   font-size: 0.9rem;
   font-weight: 600;
+  margin-bottom: 0;
+  cursor: pointer;
+}
+.form-group input[type="checkbox"],
+.checkbox-item input[type="checkbox"] {
+  width: auto;
+  padding: 0;
+  margin: 0;
+  flex-shrink: 0;
+  cursor: pointer;
 }
 
 /* ==========================================================

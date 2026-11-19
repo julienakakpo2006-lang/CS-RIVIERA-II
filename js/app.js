@@ -365,8 +365,8 @@ async function flushOfflineQueue(isManualTrigger = false) {
       } else if (item.actionType === "UPDATE_STUDENT") {
         const origMat = item.payload.originalMatricule || item.payload.matricule;
         const { originalMatricule, ...fields } = item.payload;
-        const { error } = await db.from("students").update(fields).eq("matricule", origMat);
-        reqError = error;
+        const { data, error } = await db.from("students").update(fields).eq("matricule", origMat).select();
+        reqError = error || (!data || data.length === 0 ? { message: `Élève introuvable dans Supabase (${origMat})` } : null);
       } else if (item.actionType === "DELETE_STUDENT") {
         const { error } = await db.from("students").delete().eq("matricule", item.payload.matricule);
         reqError = error;
@@ -377,8 +377,8 @@ async function flushOfflineQueue(isManualTrigger = false) {
         reqError = error;
       } else if (item.actionType === "UPDATE_TEACHER") {
         const { id, ...fields } = item.payload;
-        const { error } = await db.from("teachers").update(fields).eq("id", id);
-        reqError = error;
+        const { data, error } = await db.from("teachers").update(fields).eq("id", id).select();
+        reqError = error || (!data || data.length === 0 ? { message: `Professeur introuvable dans Supabase (id=${id})` } : null);
       } else if (item.actionType === "DELETE_TEACHER") {
         const { error } = await db.from("teachers").delete().eq("id", item.payload.id);
         reqError = error;
@@ -596,23 +596,20 @@ function updateTeacherBulletinNavVisibility() {
 // CHARGEMENT & SYNCHRONISATION SUPABASE
 // ==========================================================
 async function loadAllDataFromSupabase() {
-  if (!db) return;
+  ensureSupabaseClient();
+  if (!db) {
+    console.error("❌ Client Supabase non initialisé.");
+    updateNetworkIndicator(false);
+    return;
+  }
   try {
-    const [
-      clsRes,
-      subRes,
-      tchRes,
-      stdRes,
-      grdRes,
-      evRes,
-      evReqRes,
-      derRes,
-      ttRes,
-      annRes,
-      notifRes,
-      trimRes,
-      attRes
-    ] = await Promise.all([
+    const tableNames = [
+      "classes", "subjects", "teachers", "students", "grades",
+      "evaluations", "eval_requests", "derogations", "timetables",
+      "announcements", "notifications", "trimesters_config", "attendance"
+    ];
+
+    const results = await Promise.all([
       db.from("classes").select("name").order("id", { ascending: true }),
       db.from("subjects").select("name, default_coef").order("id", { ascending: true }),
       db.from("teachers").select("id, name, access_code, subjects, classes").order("id", { ascending: true }),
@@ -627,6 +624,31 @@ async function loadAllDataFromSupabase() {
       db.from("trimesters_config").select("*"),
       db.from("attendance").select("*").order("date", { ascending: false })
     ]);
+
+    const [
+      clsRes, subRes, tchRes, stdRes, grdRes, evRes,
+      evReqRes, derRes, ttRes, annRes, notifRes, trimRes, attRes
+    ] = results;
+
+    const failedTables = [];
+    results.forEach((res, idx) => {
+      if (res.error) {
+        failedTables.push({
+          table: tableNames[idx],
+          code: res.error.code || "ERR",
+          message: res.error.message
+        });
+      }
+    });
+
+    if (failedTables.length > 0) {
+      console.error("❌ Erreurs Supabase détectées au chargement :", failedTables);
+    }
+
+    if (failedTables.length === results.length) {
+      updateNetworkIndicator(false);
+      return;
+    }
 
     if (clsRes.data?.length) {
       APP_STATE.classes = clsRes.data.map(c => c.name);
@@ -739,7 +761,7 @@ async function loadAllDataFromSupabase() {
 
     detectActiveTrimester();
     refreshUI();
-    updateNetworkIndicator(true);
+    updateNetworkIndicator(navigator.onLine && failedTables.length < results.length);
   } catch (err) {
     console.warn("Mode local actif :", err);
     updateNetworkIndicator(false);
@@ -748,11 +770,12 @@ async function loadAllDataFromSupabase() {
 
 // TEMPS RÉEL SUPABASE COMPLET (AVEC IMPACT IMMÉDIAT SUR EMPLOI DU TEMPS)
 function subscribeToSupabaseRealtime() {
+  ensureSupabaseClient();
   if (!db) return;
   db.channel("school-sync-live")
     .on("postgres_changes", { event: "*", schema: "public", table: "timetables" }, async () => {
       const { data, error } = await db.from("timetables").select("*");
-      if (!error && Array.isArray(data) && data.length > 0) {
+      if (!error && Array.isArray(data)) {
         APP_STATE.timetables = data;
         try { localStorage.setItem("riviera_cached_timetables", JSON.stringify(APP_STATE.timetables)); } catch (e) {}
         renderAdminTimetable();
@@ -760,8 +783,8 @@ function subscribeToSupabaseRealtime() {
       }
     })
     .on("postgres_changes", { event: "*", schema: "public", table: "students" }, async () => {
-      const { data } = await db.from("students").select("*").order("matricule", { ascending: true });
-      if (data) {
+      const { data, error } = await db.from("students").select("*").order("matricule", { ascending: true });
+      if (!error && Array.isArray(data)) {
         APP_STATE.students = data.map(s => ({
           id: s.id,
           matricule: s.matricule,
@@ -779,16 +802,32 @@ function subscribeToSupabaseRealtime() {
       }
     })
     .on("postgres_changes", { event: "*", schema: "public", table: "teachers" }, async () => {
-      const { data } = await db.from("teachers").select("*").order("id", { ascending: true });
-      if (data) {
+      const { data, error } = await db.from("teachers").select("id, name, access_code, subjects, classes").order("id", { ascending: true });
+      if (!error && Array.isArray(data)) {
         APP_STATE.teachers = data;
         try { localStorage.setItem("riviera_cached_teachers", JSON.stringify(APP_STATE.teachers)); } catch (e) {}
         refreshUI();
       }
     })
+    .on("postgres_changes", { event: "*", schema: "public", table: "classes" }, async () => {
+      const { data, error } = await db.from("classes").select("name").order("id", { ascending: true });
+      if (!error && Array.isArray(data)) {
+        APP_STATE.classes = data.map(c => c.name);
+        try { localStorage.setItem("riviera_cached_classes", JSON.stringify(APP_STATE.classes)); } catch (e) {}
+        refreshUI();
+      }
+    })
+    .on("postgres_changes", { event: "*", schema: "public", table: "subjects" }, async () => {
+      const { data, error } = await db.from("subjects").select("name, default_coef").order("id", { ascending: true });
+      if (!error && Array.isArray(data)) {
+        APP_STATE.subjects = data.map(s => ({ name: s.name, coef: s.default_coef }));
+        try { localStorage.setItem("riviera_cached_subjects", JSON.stringify(APP_STATE.subjects)); } catch (e) {}
+        refreshUI();
+      }
+    })
     .on("postgres_changes", { event: "*", schema: "public", table: "grades" }, async () => {
-      const { data } = await db.from("grades").select("*");
-      if (data) {
+      const { data, error } = await db.from("grades").select("*");
+      if (!error && Array.isArray(data)) {
         APP_STATE.grades = data;
         try { localStorage.setItem("riviera_cached_grades", JSON.stringify(APP_STATE.grades)); } catch (e) {}
         renderAdminGradesView();
@@ -798,17 +837,41 @@ function subscribeToSupabaseRealtime() {
       }
     })
     .on("postgres_changes", { event: "*", schema: "public", table: "attendance" }, async () => {
-      const { data, error } = await db.from("attendance").select("*").order("created_at", { ascending: false });
-      if (!error && data) {
+      const { data, error } = await db.from("attendance").select("*").order("date", { ascending: false });
+      if (!error && Array.isArray(data)) {
         APP_STATE.attendance = data;
         try { localStorage.setItem("riviera_cached_attendance", JSON.stringify(data)); } catch (e) {}
         renderAttendanceTable();
       }
     })
+    .on("postgres_changes", { event: "*", schema: "public", table: "evaluations" }, async () => {
+      const { data, error } = await db.from("evaluations").select("*").order("eval_date", { ascending: true });
+      if (!error && Array.isArray(data)) {
+        APP_STATE.evaluations = data;
+        try { localStorage.setItem("riviera_cached_evaluations", JSON.stringify(data)); } catch (e) {}
+        renderCalendar();
+      }
+    })
+    .on("postgres_changes", { event: "*", schema: "public", table: "announcements" }, async () => {
+      const { data, error } = await db.from("announcements").select("*").order("created_at", { ascending: false });
+      if (!error && Array.isArray(data)) {
+        APP_STATE.announcements = data;
+        try { localStorage.setItem("riviera_cached_announcements", JSON.stringify(data)); } catch (e) {}
+        renderAnnouncements();
+      }
+    })
+    .on("postgres_changes", { event: "*", schema: "public", table: "trimesters_config" }, async () => {
+      const { data, error } = await db.from("trimesters_config").select("*");
+      if (!error && Array.isArray(data) && data.length > 0) {
+        APP_STATE.trimestersConfig = data.map(t => ({ ...t, closed: Boolean(t.closed) }));
+        try { localStorage.setItem("riviera_cached_trimesters", JSON.stringify(APP_STATE.trimestersConfig)); } catch (e) {}
+        detectActiveTrimester();
+        filterTeacherGrades();
+      }
+    })
     .on("postgres_changes", { event: "*", schema: "public", table: "derogations" }, async () => {
-      console.log("⚡ Événement Dérogation détecté en direct !");
       const { data, error } = await db.from("derogations").select("*").order("created_at", { ascending: false });
-      if (!error && data) {
+      if (!error && Array.isArray(data)) {
         APP_STATE.derogations = data;
         try { localStorage.setItem("riviera_cached_derogations", JSON.stringify(data)); } catch (e) {}
         renderAdminPendingRequests();
@@ -818,16 +881,18 @@ function subscribeToSupabaseRealtime() {
     })
     .on("postgres_changes", { event: "*", schema: "public", table: "eval_requests" }, async () => {
       const { data, error } = await db.from("eval_requests").select("*").order("created_at", { ascending: false });
-      if (!error && data) {
+      if (!error && Array.isArray(data)) {
         APP_STATE.evalRequests = data;
+        try { localStorage.setItem("riviera_cached_eval_requests", JSON.stringify(data)); } catch (e) {}
         renderAdminPendingRequests();
         renderTeacherEvalRequests();
       }
     })
     .on("postgres_changes", { event: "*", schema: "public", table: "notifications" }, async () => {
-      const { data } = await db.from("notifications").select("*").eq("is_read", false).order("created_at", { ascending: false });
-      if (data) {
+      const { data, error } = await db.from("notifications").select("*").eq("is_read", false).order("created_at", { ascending: false });
+      if (!error && Array.isArray(data)) {
         APP_STATE.notifications = data;
+        try { localStorage.setItem("riviera_cached_notifications", JSON.stringify(data)); } catch (e) {}
         renderNotifications();
       }
     })
@@ -890,13 +955,14 @@ window.addEventListener("storage", (event) => {
 
 // Synchronisation discrète toutes les 4 secondes
 setInterval(async () => {
+  ensureSupabaseClient();
   if (db && navigator.onLine) {
     try {
       const { data, error } = await db.from("timetables").select("*");
-      if (!error && Array.isArray(data) && data.length > 0) {
+      if (!error && Array.isArray(data)) {
         if (JSON.stringify(data) !== JSON.stringify(APP_STATE.timetables)) {
           APP_STATE.timetables = data;
-          localStorage.setItem("riviera_cached_timetables", JSON.stringify(data));
+          try { localStorage.setItem("riviera_cached_timetables", JSON.stringify(data)); } catch (e) {}
           renderAdminTimetable();
           renderTeacherTimetable();
         }
@@ -1748,23 +1814,50 @@ function setupEditStudentModal() {
       pob: pob
     };
 
-    let saveSuccess = true;
+    let saveSuccess = false;
+    let isOfflineQueued = false;
+    let supabaseErrorMsg = "";
+
+    ensureSupabaseClient();
 
     if (db && navigator.onLine) {
       try {
-        const { error } = await db.from("students").update(payload).eq("matricule", origMat);
+        const { data, error } = await db
+          .from("students")
+          .update(payload)
+          .eq("matricule", origMat)
+          .select();
+
         if (error) {
-          saveSuccess = false;
-          console.error("❌ Erreur mise à jour Supabase :", error);
-          queueOfflineAction("UPDATE_STUDENT", { originalMatricule: origMat, ...payload });
+          console.error("❌ Erreur mise à jour élève Supabase :", error);
+          if (/fetch|network|offline|timeout/i.test(error.message || "")) {
+            isOfflineQueued = true;
+            queueOfflineAction("UPDATE_STUDENT", { originalMatricule: origMat, ...payload });
+          } else {
+            supabaseErrorMsg = error.message || "Erreur Supabase";
+          }
+        } else if (!data || data.length === 0) {
+          supabaseErrorMsg = `Élève introuvable dans Supabase (${origMat}) ou bloqué par RLS.`;
+        } else {
+          saveSuccess = true;
         }
       } catch (err) {
-        saveSuccess = false;
+        isOfflineQueued = true;
         queueOfflineAction("UPDATE_STUDENT", { originalMatricule: origMat, ...payload });
       }
     } else {
       // Support hors-ligne garanti
+      isOfflineQueued = true;
       queueOfflineAction("UPDATE_STUDENT", { originalMatricule: origMat, ...payload });
+    }
+
+    if (!saveSuccess && !isOfflineQueued) {
+      if (btnSubmit) {
+        btnSubmit.disabled = false;
+        btnSubmit.textContent = "💾 Enregistrer les modifications";
+      }
+      alert("❌ Échec de modification dans Supabase :\n" + supabaseErrorMsg);
+      return;
     }
 
     // Mise à jour immédiate de la mémoire locale
@@ -1786,7 +1879,7 @@ function setupEditStudentModal() {
       } catch (e) {}
     }
 
-    // Si le matricule a été modifié, mettre à jour les liaisons locales
+    // Si le matricule a été modifié, mettre à jour les liaisons locales et Supabase
     if (origMat !== newMat) {
       APP_STATE.grades.forEach(g => {
         if (g.student_matricule === origMat) g.student_matricule = newMat;
@@ -1797,6 +1890,16 @@ function setupEditStudentModal() {
           a.student_name = `${lName} ${fName}`;
         }
       });
+
+      if (saveSuccess && db && navigator.onLine) {
+        try {
+          await db.from("grades").update({ student_matricule: newMat }).eq("student_matricule", origMat);
+          await db.from("attendance").update({ student_matricule: newMat, student_name: `${lName} ${fName}` }).eq("student_matricule", origMat);
+        } catch (err) {
+          console.warn("⚠️ Changement de matricule non propagé sur grades/attendance :", err);
+        }
+      }
+
       try {
         localStorage.setItem("riviera_cached_grades", JSON.stringify(APP_STATE.grades));
         localStorage.setItem("riviera_cached_attendance", JSON.stringify(APP_STATE.attendance));
@@ -1812,9 +1915,9 @@ function setupEditStudentModal() {
     refreshUI();
 
     if (saveSuccess) {
-      alert("✅ Fiche élève modifiée et enregistrée avec succès !");
+      alert("✅ Fiche élève modifiée et confirmée dans Supabase !");
     } else {
-      alert("ℹ️ Fiche élève modifiée localement. Synchronisation avec Supabase dès que la connexion est rétablie.");
+      alert("ℹ️ Fiche élève modifiée localement (hors-ligne). Synchronisation dès que la connexion est rétablie.");
     }
   });
 }
@@ -1831,9 +1934,19 @@ window.openStudentBulletin = function(matricule) {
 
 window.deleteStudentConfirmed = async function(matricule) {
   if (confirm(`Confirmez-vous la suppression de l'élève (${matricule}) ?`)) {
+    ensureSupabaseClient();
     if (db && navigator.onLine) {
       try {
-        await db.from("students").delete().eq("matricule", matricule);
+        const { error } = await db.from("students").delete().eq("matricule", matricule);
+        if (error) {
+          console.error("❌ Erreur suppression élève Supabase :", error);
+          if (/fetch|network|offline|timeout/i.test(error.message || "")) {
+            queueOfflineAction("DELETE_STUDENT", { matricule });
+          } else {
+            alert("❌ Suppression impossible dans Supabase :\n" + error.message);
+            return;
+          }
+        }
       } catch (e) {
         queueOfflineAction("DELETE_STUDENT", { matricule });
       }
@@ -1850,7 +1963,20 @@ window.deleteTeacherConfirmed = async function(teacherId) {
   if (confirm("Confirmez-vous la suppression de ce professeur ?")) {
     ensureSupabaseClient();
     if (db && navigator.onLine) {
-      try { await db.from("teachers").delete().eq("id", teacherId); } catch (e) { queueOfflineAction("DELETE_TEACHER", { id: teacherId }); }
+      try {
+        const { error } = await db.from("teachers").delete().eq("id", teacherId);
+        if (error) {
+          console.error("❌ Erreur suppression professeur Supabase :", error);
+          if (/fetch|network|offline|timeout/i.test(error.message || "")) {
+            queueOfflineAction("DELETE_TEACHER", { id: teacherId });
+          } else {
+            alert("❌ Suppression impossible dans Supabase :\n" + error.message);
+            return;
+          }
+        }
+      } catch (e) {
+        queueOfflineAction("DELETE_TEACHER", { id: teacherId });
+      }
     } else {
       queueOfflineAction("DELETE_TEACHER", { id: teacherId });
     }
@@ -1942,14 +2068,27 @@ window.openClassModal = function(className = null) {
 
 window.deleteClassConfirmed = async function(className) {
   if (confirm(`Confirmez-vous la suppression de la classe "${className}" ?`)) {
-    APP_STATE.classes = APP_STATE.classes.filter(c => c !== className);
     ensureSupabaseClient();
     if (db && navigator.onLine) {
-      try { await db.from("classes").delete().eq("name", className); } catch (e) { queueOfflineAction("DELETE_CLASS", { name: className }); }
+      try {
+        const { error } = await db.from("classes").delete().eq("name", className);
+        if (error) {
+          console.error("❌ Erreur suppression classe Supabase :", error);
+          if (/fetch|network|offline|timeout/i.test(error.message || "")) {
+            queueOfflineAction("DELETE_CLASS", { name: className });
+          } else {
+            alert("❌ Suppression de la classe impossible dans Supabase :\n" + error.message);
+            return;
+          }
+        }
+      } catch (e) {
+        queueOfflineAction("DELETE_CLASS", { name: className });
+      }
     } else {
       queueOfflineAction("DELETE_CLASS", { name: className });
     }
 
+    APP_STATE.classes = APP_STATE.classes.filter(c => c !== className);
     try { localStorage.setItem("riviera_cached_classes", JSON.stringify(APP_STATE.classes)); } catch (e) {}
     refreshUI();
   }
@@ -1984,14 +2123,27 @@ window.openSubjectModal = function(subjectName = null) {
 
 window.deleteSubjectConfirmed = async function(subjectName) {
   if (confirm(`Confirmez-vous la suppression de la matière "${subjectName}" ?`)) {
-    APP_STATE.subjects = APP_STATE.subjects.filter(s => s.name !== subjectName);
     ensureSupabaseClient();
     if (db && navigator.onLine) {
-      try { await db.from("subjects").delete().eq("name", subjectName); } catch (e) { queueOfflineAction("DELETE_SUBJECT", { name: subjectName }); }
+      try {
+        const { error } = await db.from("subjects").delete().eq("name", subjectName);
+        if (error) {
+          console.error("❌ Erreur suppression matière Supabase :", error);
+          if (/fetch|network|offline|timeout/i.test(error.message || "")) {
+            queueOfflineAction("DELETE_SUBJECT", { name: subjectName });
+          } else {
+            alert("❌ Suppression de la matière impossible dans Supabase :\n" + error.message);
+            return;
+          }
+        }
+      } catch (e) {
+        queueOfflineAction("DELETE_SUBJECT", { name: subjectName });
+      }
     } else {
       queueOfflineAction("DELETE_SUBJECT", { name: subjectName });
     }
 
+    APP_STATE.subjects = APP_STATE.subjects.filter(s => s.name !== subjectName);
     try { localStorage.setItem("riviera_cached_subjects", JSON.stringify(APP_STATE.subjects)); } catch (e) {}
     refreshUI();
   }
@@ -2021,32 +2173,90 @@ function setupClassAndSubjectManagement() {
 
     if (!newName) return;
 
+    if (!oldName && APP_STATE.classes.includes(newName)) {
+      return alert(`La classe "${newName}" existe déjà.`);
+    }
+
+    let saveSuccess = false;
+    let isOfflineQueued = false;
+    let supabaseErrorMsg = "";
+
+    ensureSupabaseClient();
+
     if (oldName) {
-      // Modification
+      if (db && navigator.onLine) {
+        try {
+          const { data, error } = await db
+            .from("classes")
+            .update({ name: newName })
+            .eq("name", oldName)
+            .select();
+
+          if (error) {
+            if (/fetch|network|offline|timeout/i.test(error.message || "")) {
+              isOfflineQueued = true;
+              queueOfflineAction("UPDATE_CLASS", { oldName, newName });
+            } else {
+              supabaseErrorMsg = error.message;
+            }
+          } else if (!data || data.length === 0) {
+            supabaseErrorMsg = `Classe "${oldName}" introuvable dans Supabase.`;
+          } else {
+            saveSuccess = true;
+          }
+        } catch (err) {
+          isOfflineQueued = true;
+          queueOfflineAction("UPDATE_CLASS", { oldName, newName });
+        }
+      } else {
+        isOfflineQueued = true;
+        queueOfflineAction("UPDATE_CLASS", { oldName, newName });
+      }
+    } else {
+      if (db && navigator.onLine) {
+        try {
+          const { error } = await db.from("classes").insert([{ name: newName }]);
+          if (error) {
+            if (/fetch|network|offline|timeout/i.test(error.message || "")) {
+              isOfflineQueued = true;
+              queueOfflineAction("INSERT_CLASS", { name: newName });
+            } else {
+              supabaseErrorMsg = error.message;
+            }
+          } else {
+            saveSuccess = true;
+          }
+        } catch (err) {
+          isOfflineQueued = true;
+          queueOfflineAction("INSERT_CLASS", { name: newName });
+        }
+      } else {
+        isOfflineQueued = true;
+        queueOfflineAction("INSERT_CLASS", { name: newName });
+      }
+    }
+
+    if (!saveSuccess && !isOfflineQueued) {
+      return alert("❌ Erreur Supabase (Classe) :\n" + supabaseErrorMsg);
+    }
+
+    if (oldName) {
       const idx = APP_STATE.classes.indexOf(oldName);
       if (idx !== -1) APP_STATE.classes[idx] = newName;
 
-      // Répercussion automatique sur les élèves de cette classe
       APP_STATE.students.forEach(s => {
         if (s.class === oldName) s.class = newName;
       });
 
-      ensureSupabaseClient();
-      if (db && navigator.onLine) {
-        try { await db.from("classes").update({ name: newName }).eq("name", oldName); } catch (err) { queueOfflineAction("UPDATE_CLASS", { oldName, newName }); }
-      } else {
-        queueOfflineAction("UPDATE_CLASS", { oldName, newName });
-      }
-    } else {
-      if (!APP_STATE.classes.includes(newName)) {
-        APP_STATE.classes.push(newName);
-        ensureSupabaseClient();
-        if (db && navigator.onLine) {
-          try { await db.from("classes").insert([{ name: newName }]); } catch (err) { queueOfflineAction("INSERT_CLASS", { name: newName }); }
-        } else {
-          queueOfflineAction("INSERT_CLASS", { name: newName });
+      if (saveSuccess && oldName !== newName && db && navigator.onLine) {
+        try {
+          await db.from("students").update({ class_name: newName }).eq("class_name", oldName);
+        } catch (err) {
+          console.warn("⚠️ Renommage classe non propagé sur students :", err);
         }
       }
+    } else {
+      APP_STATE.classes.push(newName);
     }
 
     try {
@@ -2056,7 +2266,11 @@ function setupClassAndSubjectManagement() {
 
     closeClass();
     refreshUI();
-    alert("✅ Classe enregistrée avec succès !");
+    alert(
+      saveSuccess
+        ? "✅ Classe enregistrée et confirmée dans Supabase !"
+        : "ℹ️ Classe enregistrée localement (hors-ligne). Synchronisation dès le retour d'Internet."
+    );
   });
 
   // Fermetures modale matière
@@ -2078,37 +2292,99 @@ function setupClassAndSubjectManagement() {
 
     if (!newName) return;
 
+    if (!oldName && APP_STATE.subjects.some(s => s.name === newName)) {
+      return alert(`La matière "${newName}" existe déjà.`);
+    }
+
+    let saveSuccess = false;
+    let isOfflineQueued = false;
+    let supabaseErrorMsg = "";
+
+    ensureSupabaseClient();
+
     if (oldName) {
-      // Modification
+      if (db && navigator.onLine) {
+        try {
+          const { data, error } = await db
+            .from("subjects")
+            .update({ name: newName, default_coef: newCoef })
+            .eq("name", oldName)
+            .select();
+
+          if (error) {
+            if (/fetch|network|offline|timeout/i.test(error.message || "")) {
+              isOfflineQueued = true;
+              queueOfflineAction("UPDATE_SUBJECT", { oldName, newName, default_coef: newCoef });
+            } else {
+              supabaseErrorMsg = error.message;
+            }
+          } else if (!data || data.length === 0) {
+            supabaseErrorMsg = `Matière "${oldName}" introuvable dans Supabase.`;
+          } else {
+            saveSuccess = true;
+          }
+        } catch (err) {
+          isOfflineQueued = true;
+          queueOfflineAction("UPDATE_SUBJECT", { oldName, newName, default_coef: newCoef });
+        }
+      } else {
+        isOfflineQueued = true;
+        queueOfflineAction("UPDATE_SUBJECT", { oldName, newName, default_coef: newCoef });
+      }
+    } else {
+      if (db && navigator.onLine) {
+        try {
+          const { error } = await db.from("subjects").insert([{ name: newName, default_coef: newCoef }]);
+          if (error) {
+            if (/fetch|network|offline|timeout/i.test(error.message || "")) {
+              isOfflineQueued = true;
+              queueOfflineAction("INSERT_SUBJECT", { name: newName, default_coef: newCoef });
+            } else {
+              supabaseErrorMsg = error.message;
+            }
+          } else {
+            saveSuccess = true;
+          }
+        } catch (err) {
+          isOfflineQueued = true;
+          queueOfflineAction("INSERT_SUBJECT", { name: newName, default_coef: newCoef });
+        }
+      } else {
+        isOfflineQueued = true;
+        queueOfflineAction("INSERT_SUBJECT", { name: newName, default_coef: newCoef });
+      }
+    }
+
+    if (!saveSuccess && !isOfflineQueued) {
+      return alert("❌ Erreur Supabase (Matière) :\n" + supabaseErrorMsg);
+    }
+
+    if (oldName) {
       const sub = APP_STATE.subjects.find(s => s.name === oldName);
       if (sub) {
         sub.name = newName;
         sub.coef = newCoef;
       }
-      ensureSupabaseClient();
-      if (db && navigator.onLine) {
-        try { await db.from("subjects").update({ name: newName, default_coef: newCoef }).eq("name", oldName); } catch (err) { queueOfflineAction("UPDATE_SUBJECT", { oldName, newName, default_coef: newCoef }); }
-      } else {
-        queueOfflineAction("UPDATE_SUBJECT", { oldName, newName, default_coef: newCoef });
-      }
-    } else {
-      const exists = APP_STATE.subjects.some(s => s.name === newName);
-      if (!exists) {
-        APP_STATE.subjects.push({ name: newName, coef: newCoef });
-        ensureSupabaseClient();
-        if (db && navigator.onLine) {
-          try { await db.from("subjects").insert([{ name: newName, default_coef: newCoef }]); } catch (err) { queueOfflineAction("INSERT_SUBJECT", { name: newName, default_coef: newCoef }); }
-        } else {
-          queueOfflineAction("INSERT_SUBJECT", { name: newName, default_coef: newCoef });
+      if (saveSuccess && oldName !== newName && db && navigator.onLine) {
+        try {
+          await db.from("grades").update({ subject_name: newName }).eq("subject_name", oldName);
+        } catch (err) {
+          console.warn("⚠️ Renommage matière non propagé sur grades :", err);
         }
       }
+    } else {
+      APP_STATE.subjects.push({ name: newName, coef: newCoef });
     }
 
     try { localStorage.setItem("riviera_cached_subjects", JSON.stringify(APP_STATE.subjects)); } catch (err) {}
 
     closeSubject();
     refreshUI();
-    alert("✅ Matière et coefficient enregistrés avec succès !");
+    alert(
+      saveSuccess
+        ? "✅ Matière et coefficient confirmés dans Supabase !"
+        : "ℹ️ Matière enregistrée localement (hors-ligne). Synchronisation dès le retour d'Internet."
+    );
   });
 }
 
@@ -2153,23 +2429,53 @@ function setupTeacherAssignmentsModal() {
       subjects: checkedSubjects
     };
 
-    let saveSuccess = true;
+    let saveSuccess = false;
+    let isOfflineQueued = false;
+    let supabaseErrorMsg = "";
+
+    ensureSupabaseClient();
 
     if (db && navigator.onLine) {
       try {
-        const { error } = await db.from("teachers").update(payload).eq("id", APP_STATE.currentTeacherAssignId);
+        const { data, error } = await db
+          .from("teachers")
+          .update(payload)
+          .eq("id", APP_STATE.currentTeacherAssignId)
+          .select();
+
         if (error) {
-          saveSuccess = false;
           console.error("❌ Erreur modification professeur Supabase :", error);
-          queueOfflineAction("UPDATE_TEACHER", { id: APP_STATE.currentTeacherAssignId, ...payload });
+          if (/fetch|network|offline|timeout/i.test(error.message || "")) {
+            isOfflineQueued = true;
+            queueOfflineAction("UPDATE_TEACHER", { id: APP_STATE.currentTeacherAssignId, ...payload });
+          } else {
+            supabaseErrorMsg = error.message || "Erreur inconnue Supabase";
+          }
+        } else if (!data || data.length === 0) {
+          console.warn("⚠️ 0 ligne mise à jour dans teachers pour id =", APP_STATE.currentTeacherAssignId);
+          supabaseErrorMsg = "Professeur introuvable dans Supabase (ID non synchronisé ou bloqué par les règles RLS).";
+        } else {
+          saveSuccess = true;
         }
       } catch (e) {
-        saveSuccess = false;
+        console.warn("⚠️ Erreur réseau modification professeur :", e);
+        isOfflineQueued = true;
         queueOfflineAction("UPDATE_TEACHER", { id: APP_STATE.currentTeacherAssignId, ...payload });
       }
     } else {
       // Support hors-ligne garanti
+      isOfflineQueued = true;
       queueOfflineAction("UPDATE_TEACHER", { id: APP_STATE.currentTeacherAssignId, ...payload });
+    }
+
+    // Si Supabase en ligne a refusé ou n'a trouvé aucune ligne, on bloque le faux succès
+    if (!saveSuccess && !isOfflineQueued) {
+      if (btnSave) {
+        btnSave.disabled = false;
+        btnSave.textContent = "💾 Enregistrer les modifications";
+      }
+      alert("❌ Échec de l'enregistrement dans Supabase :\n" + supabaseErrorMsg);
+      return;
     }
 
     // Mise à jour de l'état local
@@ -2187,6 +2493,17 @@ function setupTeacherAssignmentsModal() {
       APP_STATE.grades.forEach(g => {
         if (g.teacher_name === oldName) g.teacher_name = newName;
       });
+
+      if (saveSuccess && db && navigator.onLine) {
+        try {
+          const { error: ttErr } = await db.from("timetables").update({ teacher_name: newName }).eq("teacher_name", oldName);
+          if (ttErr) console.warn("⚠️ Erreur propagation nom sur timetables :", ttErr);
+          const { error: grdErr } = await db.from("grades").update({ teacher_name: newName }).eq("teacher_name", oldName);
+          if (grdErr) console.warn("⚠️ Erreur propagation nom sur grades :", grdErr);
+        } catch (err) {
+          console.warn("⚠️ Renommage non propagé sur timetables/grades :", err);
+        }
+      }
 
       try {
         localStorage.setItem("riviera_cached_timetables", JSON.stringify(APP_STATE.timetables));
@@ -2207,7 +2524,7 @@ function setupTeacherAssignmentsModal() {
     refreshUI();
 
     if (saveSuccess) {
-      alert("✅ Informations du professeur mises à jour avec succès !");
+      alert("✅ Informations du professeur mises à jour et confirmées dans Supabase !");
     } else {
       alert("ℹ️ Modifications enregistrées localement (mode hors-ligne actif). Synchronisation automatique dès que la connexion est rétablie.");
     }
@@ -3073,8 +3390,7 @@ function renderAdminGradesView() {
 function setupTeacherEvaluationPrep() {
   document.getElementById("form-teacher-prep-eval")?.addEventListener("submit", async (e) => {
     e.preventDefault();
-    const newRequest = {
-      id: Date.now(),
+    const dbPayload = {
       teacher_name: APP_STATE.currentUser?.name || "Professeur",
       class_name: document.getElementById("prep-eval-class").value,
       subject_name: document.getElementById("prep-eval-subject").value,
@@ -3087,18 +3403,49 @@ function setupTeacherEvaluationPrep() {
       refusal_reason: null
     };
 
+    let saveSuccess = false;
+    let isOfflineQueued = false;
+    let supabaseErrorMsg = "";
+    let savedRecord = { id: Date.now(), ...dbPayload };
+
+    ensureSupabaseClient();
     if (db && navigator.onLine) {
-      try { await db.from("eval_requests").insert([newRequest]); }
-      catch (err) { queueOfflineAction("INSERT_EVAL", newRequest); }
+      try {
+        const { data, error } = await db.from("eval_requests").insert([dbPayload]).select();
+        if (error) {
+          console.error("❌ Erreur Supabase eval_requests :", error);
+          if (/fetch|network|offline|timeout/i.test(error.message || "")) {
+            isOfflineQueued = true;
+            queueOfflineAction("INSERT_EVAL", dbPayload);
+          } else {
+            supabaseErrorMsg = error.message || "Erreur Supabase";
+          }
+        } else {
+          saveSuccess = true;
+          if (data && data.length > 0) savedRecord = data[0];
+        }
+      } catch (err) {
+        isOfflineQueued = true;
+        queueOfflineAction("INSERT_EVAL", dbPayload);
+      }
     } else {
-      queueOfflineAction("INSERT_EVAL", newRequest);
+      isOfflineQueued = true;
+      queueOfflineAction("INSERT_EVAL", dbPayload);
     }
 
-    APP_STATE.evalRequests.unshift(newRequest);
- try { localStorage.setItem("riviera_cached_eval_requests", JSON.stringify(APP_STATE.evalRequests)); } catch (err) {}
- renderTeacherEvalRequests();
+    if (!saveSuccess && !isOfflineQueued) {
+      return alert("❌ Échec d'envoi vers Supabase :\n" + supabaseErrorMsg);
+    }
+
+    APP_STATE.evalRequests.unshift(savedRecord);
+    try { localStorage.setItem("riviera_cached_eval_requests", JSON.stringify(APP_STATE.evalRequests)); } catch (err) {}
+    renderTeacherEvalRequests();
     renderAdminPendingRequests();
-    alert("✅ Évaluation soumise à la Direction (Validation automatique dans 12h).");
+    alert(
+      saveSuccess
+        ? "✅ Évaluation soumise et confirmée dans Supabase (Validation automatique dans 12h)."
+        : "ℹ️ Évaluation enregistrée localement (hors-ligne). Synchronisation dès le retour d'Internet."
+    );
     e.target.reset();
   });
 }
@@ -3406,62 +3753,121 @@ window.adminDecideRequest = async function(id, type, accept) {
   const targetId = isNaN(id) ? id : Number(id);
 
   if (accept) {
+    ensureSupabaseClient();
+    let saveSuccess = false;
+    let isOfflineQueued = false;
+    let supabaseErrorMsg = "";
+
     if (type === "EVAL") {
       const req = APP_STATE.evalRequests.find(x => String(x.id) === String(id));
-      if (req) {
-        req.status = "ACCEPTE";
+      if (!req) return;
 
-        const cal = {
-          title: req.title,
-          class_name: req.class_name,
-          subject_name: req.subject_name,
-          eval_date: req.eval_date,
-          type: req.type,
-          instructions: req.instructions || "",
-          created_by: req.teacher_name
-        };
+      const calPayload = {
+        title: req.title,
+        class_name: req.class_name,
+        subject_name: req.subject_name,
+        eval_date: req.eval_date,
+        type: req.type,
+        instructions: req.instructions || "",
+        created_by: req.teacher_name
+      };
+      const savedCal = { id: Date.now(), ...calPayload };
 
-        // Sauvegarde définitive dans Supabase
-        if (db && navigator.onLine) {
-          try {
-            const { error: upErr } = await db.from("eval_requests").update({ status: "ACCEPTE" }).eq("id", targetId);
-            if (upErr) console.error("❌ Erreur validation eval_requests Supabase :", upErr);
-
-            const { data: calData, error: calErr } = await db.from("evaluations").insert([cal]).select();
-            if (!calErr && calData && calData.length > 0) cal.id = calData[0].id;
-          } catch (e) {
-            console.error("Exception validation évaluation :", e);
-          }
-        }
-
-        APP_STATE.evaluations.push(cal);
+      if (db && navigator.onLine) {
         try {
-          localStorage.setItem("riviera_cached_eval_requests", JSON.stringify(APP_STATE.evalRequests));
-          localStorage.setItem("riviera_cached_evaluations", JSON.stringify(APP_STATE.evaluations));
-        } catch (e) {}
+          const { data: upData, error: upErr } = await db
+            .from("eval_requests")
+            .update({ status: "ACCEPTE" })
+            .eq("id", targetId)
+            .select();
 
-        renderCalendar();
+          if (upErr) {
+            console.error("❌ Erreur validation eval_requests Supabase :", upErr);
+            if (/fetch|network|offline|timeout/i.test(upErr.message || "")) {
+              isOfflineQueued = true;
+              queueOfflineAction("UPDATE_EVAL_REQ", { id: targetId, status: "ACCEPTE" });
+              queueOfflineAction("INSERT_CALENDAR_EVAL", calPayload);
+            } else {
+              supabaseErrorMsg = upErr.message;
+            }
+          } else if (!upData || upData.length === 0) {
+            supabaseErrorMsg = `Demande d'évaluation introuvable dans Supabase (id=${targetId}).`;
+          } else {
+            const { data: calData, error: calErr } = await db.from("evaluations").insert([calPayload]).select();
+            if (calErr) {
+              console.error("❌ Erreur insertion calendrier Supabase :", calErr);
+              supabaseErrorMsg = calErr.message;
+            } else {
+              saveSuccess = true;
+              if (calData && calData.length > 0) savedCal.id = calData[0].id;
+            }
+          }
+        } catch (e) {
+          isOfflineQueued = true;
+          queueOfflineAction("UPDATE_EVAL_REQ", { id: targetId, status: "ACCEPTE" });
+          queueOfflineAction("INSERT_CALENDAR_EVAL", calPayload);
+        }
+      } else {
+        isOfflineQueued = true;
+        queueOfflineAction("UPDATE_EVAL_REQ", { id: targetId, status: "ACCEPTE" });
+        queueOfflineAction("INSERT_CALENDAR_EVAL", calPayload);
       }
+
+      if (!saveSuccess && !isOfflineQueued) {
+        return alert("❌ Échec de validation dans Supabase :\n" + supabaseErrorMsg);
+      }
+
+      req.status = "ACCEPTE";
+      APP_STATE.evaluations.push(savedCal);
+      try {
+        localStorage.setItem("riviera_cached_eval_requests", JSON.stringify(APP_STATE.evalRequests));
+        localStorage.setItem("riviera_cached_evaluations", JSON.stringify(APP_STATE.evaluations));
+      } catch (e) {}
+
+      renderCalendar();
     } else {
       // DÉROGATION ACCEPTÉE
       const d = APP_STATE.derogations.find(x => String(x.id) === String(id));
-      if (d) {
-        d.status = "ACCEPTE";
+      if (!d) return;
 
-        // Sauvegarde définitive dans Supabase
-        if (db && navigator.onLine) {
-          try {
-            const { error: derErr } = await db.from("derogations").update({ status: "ACCEPTE" }).eq("id", targetId);
-            if (derErr) console.error("❌ Erreur validation dérogation Supabase :", derErr);
-          } catch (e) {
-            console.error("Exception validation dérogation :", e);
-          }
-        }
-
+      if (db && navigator.onLine) {
         try {
-          localStorage.setItem("riviera_cached_derogations", JSON.stringify(APP_STATE.derogations));
-        } catch (e) {}
+          const { data: derData, error: derErr } = await db
+            .from("derogations")
+            .update({ status: "ACCEPTE" })
+            .eq("id", targetId)
+            .select();
+
+          if (derErr) {
+            console.error("❌ Erreur validation dérogation Supabase :", derErr);
+            if (/fetch|network|offline|timeout/i.test(derErr.message || "")) {
+              isOfflineQueued = true;
+              queueOfflineAction("UPDATE_DEROG", { id: targetId, status: "ACCEPTE" });
+            } else {
+              supabaseErrorMsg = derErr.message;
+            }
+          } else if (!derData || derData.length === 0) {
+            supabaseErrorMsg = `Dérogation introuvable dans Supabase (id=${targetId}).`;
+          } else {
+            saveSuccess = true;
+          }
+        } catch (e) {
+          isOfflineQueued = true;
+          queueOfflineAction("UPDATE_DEROG", { id: targetId, status: "ACCEPTE" });
+        }
+      } else {
+        isOfflineQueued = true;
+        queueOfflineAction("UPDATE_DEROG", { id: targetId, status: "ACCEPTE" });
       }
+
+      if (!saveSuccess && !isOfflineQueued) {
+        return alert("❌ Échec de validation dans Supabase :\n" + supabaseErrorMsg);
+      }
+
+      d.status = "ACCEPTE";
+      try {
+        localStorage.setItem("riviera_cached_derogations", JSON.stringify(APP_STATE.derogations));
+      } catch (e) {}
     }
 
     // RETRAIT DÉFINITIF DU TABLEAU DE BORD ADMIN
@@ -3498,41 +3904,98 @@ document.getElementById("btn-confirm-refusal")?.addEventListener("click", async 
 
   if (!reason) return alert("Le motif de refus est obligatoire.");
 
+  ensureSupabaseClient();
+  let saveSuccess = false;
+  let isOfflineQueued = false;
+  let supabaseErrorMsg = "";
+
   if (type === "EVAL") {
     const req = APP_STATE.evalRequests.find(x => String(x.id) === String(rawId));
-    if (req) {
-      req.status = "REFUSE";
-      req.refusal_reason = reason;
+    if (!req) return;
 
-      if (db && navigator.onLine) {
-        try {
-          const { error } = await db.from("eval_requests").update({ status: "REFUSE", refusal_reason: reason }).eq("id", targetId);
-          if (error) console.error("❌ Erreur refus eval_requests Supabase :", error);
-        } catch (e) {}
-      }
-
+    if (db && navigator.onLine) {
       try {
-        localStorage.setItem("riviera_cached_eval_requests", JSON.stringify(APP_STATE.evalRequests));
-      } catch (e) {}
+        const { data, error } = await db
+          .from("eval_requests")
+          .update({ status: "REFUSE", refusal_reason: reason })
+          .eq("id", targetId)
+          .select();
+
+        if (error) {
+          console.error("❌ Erreur refus eval_requests Supabase :", error);
+          if (/fetch|network|offline|timeout/i.test(error.message || "")) {
+            isOfflineQueued = true;
+            queueOfflineAction("UPDATE_EVAL_REQ", { id: targetId, status: "REFUSE", refusal_reason: reason });
+          } else {
+            supabaseErrorMsg = error.message;
+          }
+        } else if (!data || data.length === 0) {
+          supabaseErrorMsg = `Demande d'évaluation introuvable dans Supabase (id=${targetId}).`;
+        } else {
+          saveSuccess = true;
+        }
+      } catch (e) {
+        isOfflineQueued = true;
+        queueOfflineAction("UPDATE_EVAL_REQ", { id: targetId, status: "REFUSE", refusal_reason: reason });
+      }
+    } else {
+      isOfflineQueued = true;
+      queueOfflineAction("UPDATE_EVAL_REQ", { id: targetId, status: "REFUSE", refusal_reason: reason });
     }
+
+    if (!saveSuccess && !isOfflineQueued) {
+      return alert("❌ Échec du refus dans Supabase :\n" + supabaseErrorMsg);
+    }
+
+    req.status = "REFUSE";
+    req.refusal_reason = reason;
+    try {
+      localStorage.setItem("riviera_cached_eval_requests", JSON.stringify(APP_STATE.evalRequests));
+    } catch (e) {}
   } else {
     // DÉROGATION REFUSÉE
     const d = APP_STATE.derogations.find(x => String(x.id) === String(rawId));
-    if (d) {
-      d.status = "REFUSE";
-      d.refusal_reason = reason;
+    if (!d) return;
 
-      if (db && navigator.onLine) {
-        try {
-          const { error } = await db.from("derogations").update({ status: "REFUSE", refusal_reason: reason }).eq("id", targetId);
-          if (error) console.error("❌ Erreur refus dérogation Supabase :", error);
-        } catch (e) {}
-      }
-
+    if (db && navigator.onLine) {
       try {
-        localStorage.setItem("riviera_cached_derogations", JSON.stringify(APP_STATE.derogations));
-      } catch (e) {}
+        const { data, error } = await db
+          .from("derogations")
+          .update({ status: "REFUSE", refusal_reason: reason })
+          .eq("id", targetId)
+          .select();
+
+        if (error) {
+          console.error("❌ Erreur refus dérogation Supabase :", error);
+          if (/fetch|network|offline|timeout/i.test(error.message || "")) {
+            isOfflineQueued = true;
+            queueOfflineAction("UPDATE_DEROG", { id: targetId, status: "REFUSE", refusal_reason: reason });
+          } else {
+            supabaseErrorMsg = error.message;
+          }
+        } else if (!data || data.length === 0) {
+          supabaseErrorMsg = `Dérogation introuvable dans Supabase (id=${targetId}).`;
+        } else {
+          saveSuccess = true;
+        }
+      } catch (e) {
+        isOfflineQueued = true;
+        queueOfflineAction("UPDATE_DEROG", { id: targetId, status: "REFUSE", refusal_reason: reason });
+      }
+    } else {
+      isOfflineQueued = true;
+      queueOfflineAction("UPDATE_DEROG", { id: targetId, status: "REFUSE", refusal_reason: reason });
     }
+
+    if (!saveSuccess && !isOfflineQueued) {
+      return alert("❌ Échec du refus dans Supabase :\n" + supabaseErrorMsg);
+    }
+
+    d.status = "REFUSE";
+    d.refusal_reason = reason;
+    try {
+      localStorage.setItem("riviera_cached_derogations", JSON.stringify(APP_STATE.derogations));
+    } catch (e) {}
   }
 
   document.getElementById("modal-refusal-reason")?.classList.add("d-none");
@@ -3567,24 +4030,70 @@ toggleBulletin?.addEventListener("change", (e) => {
 
   form?.addEventListener("submit", async (e) => {
     e.preventDefault();
-    APP_STATE.trimestersConfig[0].start = document.getElementById("trim-t1-start").value;
-    APP_STATE.trimestersConfig[0].end = document.getElementById("trim-t1-end").value;
-    APP_STATE.trimestersConfig[1].start = document.getElementById("trim-t2-start").value;
-    APP_STATE.trimestersConfig[1].end = document.getElementById("trim-t2-end").value;
-    APP_STATE.trimestersConfig[2].start = document.getElementById("trim-t3-start").value;
-    APP_STATE.trimestersConfig[2].end = document.getElementById("trim-t3-end").value;
+    const updatedConfigs = [
+      {
+        ...APP_STATE.trimestersConfig[0],
+        start: document.getElementById("trim-t1-start").value,
+        end: document.getElementById("trim-t1-end").value
+      },
+      {
+        ...APP_STATE.trimestersConfig[1],
+        start: document.getElementById("trim-t2-start").value,
+        end: document.getElementById("trim-t2-end").value
+      },
+      {
+        ...APP_STATE.trimestersConfig[2],
+        start: document.getElementById("trim-t3-start").value,
+        end: document.getElementById("trim-t3-end").value
+      }
+    ];
 
+    let allSynced = true;
+    let isOfflineQueued = false;
+    let supabaseErrorMsg = "";
+
+    ensureSupabaseClient();
+    if (db && navigator.onLine) {
+      for (const tc of updatedConfigs) {
+        try {
+          const { error } = await db.from("trimesters_config").upsert(tc);
+          if (error) {
+            allSynced = false;
+            console.error("❌ Erreur Supabase trimesters_config :", error);
+            if (/fetch|network|offline|timeout/i.test(error.message || "")) {
+              isOfflineQueued = true;
+              queueOfflineAction("UPSERT_TRIMESTER", tc);
+            } else {
+              supabaseErrorMsg = error.message;
+            }
+          }
+        } catch (err) {
+          allSynced = false;
+          isOfflineQueued = true;
+          queueOfflineAction("UPSERT_TRIMESTER", tc);
+        }
+      }
+    } else {
+      allSynced = false;
+      isOfflineQueued = true;
+      updatedConfigs.forEach(tc => queueOfflineAction("UPSERT_TRIMESTER", tc));
+    }
+
+    if (!allSynced && !isOfflineQueued && supabaseErrorMsg) {
+      return alert("❌ Échec d'enregistrement dans Supabase :\n" + supabaseErrorMsg);
+    }
+
+    APP_STATE.trimestersConfig = updatedConfigs;
     try {
       localStorage.setItem("riviera_cached_trimesters", JSON.stringify(APP_STATE.trimestersConfig));
     } catch (err) {}
 
     detectActiveTrimester();
-    if (db && navigator.onLine) {
-      for (const tc of APP_STATE.trimestersConfig) {
-        try { await db.from("trimesters_config").upsert(tc); } catch (err) {}
-      }
-    }
-    alert("✅ Dates des trimestres enregistrées avec succès !");
+    alert(
+      allSynced
+        ? "✅ Dates des trimestres enregistrées et confirmées dans Supabase !"
+        : "ℹ️ Dates enregistrées localement (hors-ligne). Synchronisation dès le retour d'Internet."
+    );
   });
 
   // Initialisation et affichage immédiat de l'état des 3 trimestres
@@ -3619,21 +4128,55 @@ window.toggleTrimesterLock = async function(trimId) {
   } catch (e) {}
 
   // Synchronisation avec Supabase si connecté
-ensureSupabaseClient();
-if (db && navigator.onLine) {
- try {
-   await db.from("trimesters_config").upsert(trim);
- } catch (e) { queueOfflineAction("UPSERT_TRIMESTER", trim); }
-} else {
- queueOfflineAction("UPSERT_TRIMESTER", trim);
-}
+  let synced = false;
+  let isOfflineQueued = false;
+  let supabaseErrorMsg = "";
+
+  ensureSupabaseClient();
+  if (db && navigator.onLine) {
+    try {
+      const { error } = await db.from("trimesters_config").upsert(trim);
+      if (error) {
+        console.error("❌ Erreur Supabase clôture trimestre :", error);
+        if (/fetch|network|offline|timeout/i.test(error.message || "")) {
+          isOfflineQueued = true;
+          queueOfflineAction("UPSERT_TRIMESTER", trim);
+        } else {
+          supabaseErrorMsg = error.message || "Erreur Supabase";
+        }
+      } else {
+        synced = true;
+      }
+    } catch (e) {
+      isOfflineQueued = true;
+      queueOfflineAction("UPSERT_TRIMESTER", trim);
+    }
+  } else {
+    isOfflineQueued = true;
+    queueOfflineAction("UPSERT_TRIMESTER", trim);
+  }
+
+  if (!synced && !isOfflineQueued) {
+    // Annulation du basculement local si Supabase rejette l'opération
+    trim.closed = !trim.closed;
+    const revertedList = APP_STATE.trimestersConfig.filter(t => t.closed).map(t => t.name);
+    try {
+      localStorage.setItem("riviera_cached_trimesters", JSON.stringify(APP_STATE.trimestersConfig));
+      localStorage.setItem("riviera_locked_trimesters", JSON.stringify(revertedList));
+    } catch (e) {}
+    return alert("❌ Échec de mise à jour du trimestre dans Supabase :\n" + supabaseErrorMsg);
+  }
 
   // Actualisation immédiate sur la fenêtre en cours
   detectActiveTrimester();
   filterTeacherGrades();
 
   const statusMsg = trim.closed ? "🔒 Clôturé (Verrouillé)" : "🔓 Ouvert pour la saisie des notes";
-  alert(`✅ Le ${trim.name} est désormais : ${statusMsg} !`);
+  alert(
+    synced
+      ? `✅ Le ${trim.name} est désormais : ${statusMsg} (confirmé dans Supabase) !`
+      : `ℹ️ Le ${trim.name} est désormais : ${statusMsg} (enregistré hors-ligne).`
+  );
 };
 
 function detectActiveTrimester() {
@@ -3778,28 +4321,58 @@ function setupPasswordModals() {
         return alert("Ancien code d'accès enseignant incorrect.");
       }
 
-      teacher.access_code = newCode;
+      let pwdSynced = false;
+      let pwdOffline = false;
+      let pwdErrorMsg = "";
 
-      // Sauvegarde locale permanente
+      ensureSupabaseClient();
+      if (db && navigator.onLine) {
+        try {
+          const { data, error } = await db
+            .from("teachers")
+            .update({ access_code: newCode })
+            .eq("id", teacher.id)
+            .select();
+
+          if (error) {
+            console.error("❌ Erreur Supabase code d'accès :", error);
+            if (/fetch|network|offline|timeout/i.test(error.message || "")) {
+              pwdOffline = true;
+              queueOfflineAction("UPDATE_TEACHER", { id: teacher.id, access_code: newCode });
+            } else {
+              pwdErrorMsg = error.message || "Erreur Supabase";
+            }
+          } else if (!data || data.length === 0) {
+            pwdErrorMsg = "Compte professeur introuvable dans Supabase (0 ligne modifiée).";
+          } else {
+            pwdSynced = true;
+          }
+        } catch (err) {
+          pwdOffline = true;
+          queueOfflineAction("UPDATE_TEACHER", { id: teacher.id, access_code: newCode });
+        }
+      } else {
+        pwdOffline = true;
+        queueOfflineAction("UPDATE_TEACHER", { id: teacher.id, access_code: newCode });
+      }
+
+      if (!pwdSynced && !pwdOffline) {
+        return alert("❌ Échec de mise à jour du code dans Supabase :\n" + pwdErrorMsg);
+      }
+
+      teacher.access_code = newCode;
       try {
         localStorage.setItem("riviera_cached_teachers", JSON.stringify(APP_STATE.teachers));
       } catch (err) {}
 
-      // Sauvegarde dans Supabase avec support hors-ligne
-      if (db && navigator.onLine) {
-        try {
-          const { error } = await db.from("teachers").update({ access_code: newCode }).eq("id", teacher.id);
-          if (error) queueOfflineAction("UPDATE_TEACHER", { id: teacher.id, access_code: newCode });
-        } catch (err) {
-          queueOfflineAction("UPDATE_TEACHER", { id: teacher.id, access_code: newCode });
-        }
-      } else {
-        queueOfflineAction("UPDATE_TEACHER", { id: teacher.id, access_code: newCode });
-      }
-
       document.getElementById("modal-top-change-pwd")?.classList.add("d-none");
       e.target.reset();
-      alert(`✅ Code d'accès de ${teacher.name} mis à jour avec succès !`);
+      resetPasswordInputsVisibility();
+      alert(
+        pwdSynced
+          ? `✅ Code d'accès de ${teacher.name} mis à jour dans Supabase !`
+          : `ℹ️ Code de ${teacher.name} modifié localement (hors-ligne). Synchronisation dès le retour d'Internet.`
+      );
     }
   });
 
@@ -3843,6 +4416,49 @@ function setupPasswordModals() {
       return;
     }
 
+    let pwdSynced = false;
+    let pwdOffline = false;
+    let pwdErrorMsg = "";
+
+    ensureSupabaseClient();
+    if (db && navigator.onLine) {
+      try {
+        const { data, error } = await db
+          .from("teachers")
+          .update({ access_code: newCode })
+          .eq("id", teacher.id)
+          .select();
+
+        if (error) {
+          console.error("❌ Erreur Supabase code d'accès enseignant :", error);
+          if (/fetch|network|offline|timeout/i.test(error.message || "")) {
+            pwdOffline = true;
+            queueOfflineAction("UPDATE_TEACHER", { id: teacher.id, access_code: newCode });
+          } else {
+            pwdErrorMsg = error.message || "Erreur Supabase";
+          }
+        } else if (!data || data.length === 0) {
+          pwdErrorMsg = "Compte professeur introuvable dans Supabase (0 ligne modifiée).";
+        } else {
+          pwdSynced = true;
+        }
+      } catch (fetchErr) {
+        pwdOffline = true;
+        queueOfflineAction("UPDATE_TEACHER", { id: teacher.id, access_code: newCode });
+      }
+    } else {
+      pwdOffline = true;
+      queueOfflineAction("UPDATE_TEACHER", { id: teacher.id, access_code: newCode });
+    }
+
+    if (!pwdSynced && !pwdOffline) {
+      if (err) {
+        err.textContent = "❌ Erreur Supabase : " + pwdErrorMsg;
+        err.classList.remove("d-none");
+      }
+      return;
+    }
+
     teacher.access_code = newCode;
 
     // Sauvegarde permanente dans le cache local
@@ -3850,20 +4466,10 @@ function setupPasswordModals() {
       localStorage.setItem("riviera_cached_teachers", JSON.stringify(APP_STATE.teachers));
     } catch (e) {}
 
-    // Mise à jour Supabase + file d'attente hors-ligne
-    if (db && navigator.onLine) {
-      try {
-        const { error } = await db.from("teachers").update({ access_code: newCode }).eq("id", teacher.id);
-        if (error) queueOfflineAction("UPDATE_TEACHER", { id: teacher.id, access_code: newCode });
-      } catch (fetchErr) {
-        queueOfflineAction("UPDATE_TEACHER", { id: teacher.id, access_code: newCode });
-      }
-    } else {
-      queueOfflineAction("UPDATE_TEACHER", { id: teacher.id, access_code: newCode });
-    }
-
     if (msg) {
-      msg.textContent = "✅ Votre code d'accès a été modifié avec succès !";
+      msg.textContent = pwdSynced
+        ? "✅ Votre code d'accès a été modifié et confirmé dans Supabase !"
+        : "ℹ️ Code modifié localement (hors-ligne). Synchronisation dès le retour d'Internet.";
       msg.classList.remove("d-none");
       setTimeout(() => msg?.classList.add("d-none"), 4000);
     }
@@ -3990,8 +4596,7 @@ function setupAnnouncementSystem() {
       return;
     }
 
-    const ann = {
-      id: Date.now(),
+    const dbPayload = {
       title: title,
       target_audience: target,
       content: content,
@@ -3999,45 +4604,70 @@ function setupAnnouncementSystem() {
       created_at: new Date().toISOString()
     };
 
-    // Sauvegarde immédiate dans l'état et le cache local (100% hors-ligne)
-    APP_STATE.announcements.unshift(ann);
+    let savedAnn = { id: Date.now(), ...dbPayload };
+    let saveSuccess = false;
+    let isOfflineQueued = false;
+    let supabaseErrorMsg = "";
+
+    ensureSupabaseClient();
+    if (db && navigator.onLine) {
+      try {
+        const { data, error } = await db.from("announcements").insert([dbPayload]).select();
+        if (error) {
+          console.error("❌ Erreur Supabase announcements :", error);
+          if (/fetch|network|offline|timeout/i.test(error.message || "")) {
+            isOfflineQueued = true;
+            queueOfflineAction("INSERT_ANNOUNCEMENT", dbPayload);
+          } else {
+            supabaseErrorMsg = error.message || "Erreur Supabase";
+          }
+        } else {
+          saveSuccess = true;
+          if (data && data.length > 0) savedAnn = data[0];
+
+          const { error: notifErr } = await db.from("notifications").insert([{
+            type: "COMMUNIQUÉ",
+            message: `${dbPayload.title} : ${dbPayload.content.slice(0, 80)}...`,
+            recipient_role: "TEACHER"
+          }]);
+          if (notifErr) console.warn("⚠️ Erreur notification annonce :", notifErr);
+        }
+      } catch (err) {
+        isOfflineQueued = true;
+        queueOfflineAction("INSERT_ANNOUNCEMENT", dbPayload);
+      }
+    } else {
+      isOfflineQueued = true;
+      queueOfflineAction("INSERT_ANNOUNCEMENT", dbPayload);
+    }
+
+    if (!saveSuccess && !isOfflineQueued) {
+      if (btnSubmit) {
+        btnSubmit.disabled = false;
+        btnSubmit.textContent = "Diffuser l'annonce";
+      }
+      return alert("❌ Échec de diffusion dans Supabase :\n" + supabaseErrorMsg);
+    }
+
+    // Sauvegarde dans l'état et le cache local
+    APP_STATE.announcements.unshift(savedAnn);
     try {
       localStorage.setItem("riviera_cached_announcements", JSON.stringify(APP_STATE.announcements));
     } catch (err) {}
 
-    // Ajout d'une notification locale
     APP_STATE.notifications.unshift({
       id: Date.now(),
       type: "ANNONCE",
-      message: `Direction : ${ann.title}`,
+      message: `Direction : ${savedAnn.title}`,
       created_at: new Date().toISOString()
     });
 
-    // Envoi en ligne ou mise en file d'attente hors-ligne
-    if (db && navigator.onLine) {
-      try {
-        const { data, error } = await db.from("announcements").insert([ann]).select();
-        if (!error && data && data.length > 0) ann.id = data[0].id;
-
-        // Diffusion d'une notification générale
-        await db.from("notifications").insert([{
-          type: "COMMUNIQUÉ",
-          message: `${ann.title} : ${ann.content.slice(0, 80)}...`,
-          recipient_role: "TEACHER"
-        }]);
-      } catch (err) {
-        queueOfflineAction("INSERT_ANNOUNCEMENT", ann);
-      }
-    } else {
-      queueOfflineAction("INSERT_ANNOUNCEMENT", ann);
-    }
-
-    // ÉMISSION INSTANTANÉE EN DIRECT SANS ACTUALISATION VERS TOUTES LES FENÊTRES PROFESSEURS
+    // Émission temps réel vers les autres onglets/fenêtres
     try {
       const channel = new BroadcastChannel("riviera_school_sync");
       channel.postMessage({
         type: "NEW_ANNOUNCEMENT",
-        announcement: ann
+        announcement: savedAnn
       });
     } catch (err) {}
 
@@ -4051,7 +4681,11 @@ function setupAnnouncementSystem() {
 
     modal?.classList.add("d-none");
     e.target.reset();
-    alert("✅ Communiqué diffusé en temps réel avec succès !");
+    alert(
+      saveSuccess
+        ? "✅ Communiqué diffusé et confirmé dans Supabase !"
+        : "ℹ️ Communiqué enregistré localement (hors-ligne). Synchronisation dès le retour d'Internet."
+    );
   });
 
   // Cloche des notifications
@@ -4134,11 +4768,24 @@ function renderAnnouncements() {
 window.deleteAnnouncement = async function(id) {
   if (confirm("Confirmez-vous la suppression de ce communiqué ?")) {
     ensureSupabaseClient();
- if (db && navigator.onLine) {
-   try { await db.from("announcements").delete().eq("id", id); } catch (e) { queueOfflineAction("DELETE_ANNOUNCEMENT", { id }); }
- } else {
-   queueOfflineAction("DELETE_ANNOUNCEMENT", { id });
- }
+    if (db && navigator.onLine) {
+      try {
+        const { error } = await db.from("announcements").delete().eq("id", id);
+        if (error) {
+          console.error("❌ Erreur suppression communiqué Supabase :", error);
+          if (/fetch|network|offline|timeout/i.test(error.message || "")) {
+            queueOfflineAction("DELETE_ANNOUNCEMENT", { id });
+          } else {
+            alert("❌ Suppression du communiqué impossible dans Supabase :\n" + error.message);
+            return;
+          }
+        }
+      } catch (e) {
+        queueOfflineAction("DELETE_ANNOUNCEMENT", { id });
+      }
+    } else {
+      queueOfflineAction("DELETE_ANNOUNCEMENT", { id });
+    }
 
     APP_STATE.announcements = APP_STATE.announcements.filter(x => x.id !== id);
     try {
@@ -4268,8 +4915,7 @@ function setupCalendarSystem() {
 
   document.getElementById("form-admin-new-eval")?.addEventListener("submit", async (e) => {
     e.preventDefault();
-    const ev = {
-      id: Date.now(),
+    const dbPayload = {
       title: document.getElementById("modal-eval-title").value.trim(),
       class_name: document.getElementById("modal-eval-class").value,
       subject_name: document.getElementById("modal-eval-subject").value,
@@ -4279,20 +4925,51 @@ function setupCalendarSystem() {
       created_by: "Direction"
     };
 
+    let savedEv = { id: Date.now(), ...dbPayload };
+    let saveSuccess = false;
+    let isOfflineQueued = false;
+    let supabaseErrorMsg = "";
+
+    ensureSupabaseClient();
     if (db && navigator.onLine) {
       try {
-        const { data, error } = await db.from("evaluations").insert([ev]).select();
-        if (!error && data && data.length > 0) ev.id = data[0].id;
-      } catch (err) {}
+        const { data, error } = await db.from("evaluations").insert([dbPayload]).select();
+        if (error) {
+          console.error("❌ Erreur Supabase evaluations :", error);
+          if (/fetch|network|offline|timeout/i.test(error.message || "")) {
+            isOfflineQueued = true;
+            queueOfflineAction("INSERT_CALENDAR_EVAL", dbPayload);
+          } else {
+            supabaseErrorMsg = error.message || "Erreur Supabase";
+          }
+        } else {
+          saveSuccess = true;
+          if (data && data.length > 0) savedEv = data[0];
+        }
+      } catch (err) {
+        isOfflineQueued = true;
+        queueOfflineAction("INSERT_CALENDAR_EVAL", dbPayload);
+      }
+    } else {
+      isOfflineQueued = true;
+      queueOfflineAction("INSERT_CALENDAR_EVAL", dbPayload);
     }
 
-    APP_STATE.evaluations.push(ev);
-    try { localStorage.setItem("riviera_cached_evaluations", JSON.stringify(APP_STATE.evaluations)); } catch (e) {}
+    if (!saveSuccess && !isOfflineQueued) {
+      return alert("❌ Échec de programmation dans Supabase :\n" + supabaseErrorMsg);
+    }
+
+    APP_STATE.evaluations.push(savedEv);
+    try { localStorage.setItem("riviera_cached_evaluations", JSON.stringify(APP_STATE.evaluations)); } catch (err) {}
 
     renderCalendar();
     document.getElementById("modal-eval-admin")?.classList.add("d-none");
     e.target.reset();
-    alert("✅ Évaluation programmée avec succès !");
+    alert(
+      saveSuccess
+        ? "✅ Évaluation programmée et confirmée dans Supabase !"
+        : "ℹ️ Évaluation enregistrée localement (hors-ligne). Synchronisation dès le retour d'Internet."
+    );
   });
 
   // Fermeture de la modale du jour sélectionné
@@ -4438,17 +5115,30 @@ function refreshDayModalEvents(dateStr) {
 // Suppression d'une évaluation depuis la modale du jour
 window.deleteEvaluationFromModal = async function(id, dateStr) {
   ensureSupabaseClient();
- if (db && navigator.onLine) {
-   try { await db.from("evaluations").delete().eq("id", id); } catch (e) { queueOfflineAction("DELETE_CALENDAR_EVAL", { id }); }
- } else {
-   queueOfflineAction("DELETE_CALENDAR_EVAL", { id });
- }
+  if (db && navigator.onLine) {
+    try {
+      const { error } = await db.from("evaluations").delete().eq("id", id);
+      if (error) {
+        console.error("❌ Erreur suppression évaluation Supabase :", error);
+        if (/fetch|network|offline|timeout/i.test(error.message || "")) {
+          queueOfflineAction("DELETE_CALENDAR_EVAL", { id });
+        } else {
+          alert("❌ Suppression impossible dans Supabase :\n" + error.message);
+          return;
+        }
+      }
+    } catch (e) {
+      queueOfflineAction("DELETE_CALENDAR_EVAL", { id });
+    }
+  } else {
+    queueOfflineAction("DELETE_CALENDAR_EVAL", { id });
+  }
 
-    APP_STATE.evaluations = APP_STATE.evaluations.filter(x => x.id !== id);
-    try { localStorage.setItem("riviera_cached_evaluations", JSON.stringify(APP_STATE.evaluations)); } catch (e) {}
+  APP_STATE.evaluations = APP_STATE.evaluations.filter(x => x.id !== id);
+  try { localStorage.setItem("riviera_cached_evaluations", JSON.stringify(APP_STATE.evaluations)); } catch (e) {}
 
-    renderCalendar();
-    refreshDayModalEvents(dateStr);
+  renderCalendar();
+  refreshDayModalEvents(dateStr);
 };
 
 function renderCalendar() {
@@ -4513,8 +5203,24 @@ function renderEvaluationsTable() {
 
 window.deleteEvaluation = async function(id) {
   if (confirm("Supprimer cette évaluation ?")) {
+    ensureSupabaseClient();
     if (db && navigator.onLine) {
-      try { await db.from("evaluations").delete().eq("id", id); } catch (e) {}
+      try {
+        const { error } = await db.from("evaluations").delete().eq("id", id);
+        if (error) {
+          console.error("❌ Erreur suppression évaluation Supabase :", error);
+          if (/fetch|network|offline|timeout/i.test(error.message || "")) {
+            queueOfflineAction("DELETE_CALENDAR_EVAL", { id });
+          } else {
+            alert("❌ Suppression impossible dans Supabase :\n" + error.message);
+            return;
+          }
+        }
+      } catch (e) {
+        queueOfflineAction("DELETE_CALENDAR_EVAL", { id });
+      }
+    } else {
+      queueOfflineAction("DELETE_CALENDAR_EVAL", { id });
     }
     APP_STATE.evaluations = APP_STATE.evaluations.filter(x => x.id !== id);
     try { localStorage.setItem("riviera_cached_evaluations", JSON.stringify(APP_STATE.evaluations)); } catch (e) {}
