@@ -712,21 +712,21 @@ async function loadAllDataFromSupabase() {
       return;
     }
 
-    if (clsRes.data?.length) {
+    if (!clsRes.error && Array.isArray(clsRes.data)) {
       APP_STATE.classes = clsRes.data.map(c => c.name);
       try { localStorage.setItem("riviera_cached_classes", JSON.stringify(APP_STATE.classes)); } catch (e) {}
     }
-    if (subRes.data?.length) {
+    if (!subRes.error && Array.isArray(subRes.data)) {
       APP_STATE.subjects = subRes.data.map(s => ({ name: s.name, coef: s.default_coef }));
       try { localStorage.setItem("riviera_cached_subjects", JSON.stringify(APP_STATE.subjects)); } catch (e) {}
     }
 
-    if (tchRes.data && !tchRes.error && tchRes.data.length > 0) {
+    if (!tchRes.error && Array.isArray(tchRes.data)) {
       APP_STATE.teachers = tchRes.data;
       try { localStorage.setItem("riviera_cached_teachers", JSON.stringify(APP_STATE.teachers)); } catch (e) {}
     }
 
-    if (stdRes.data && !stdRes.error && stdRes.data.length > 0) {
+    if (!stdRes.error && Array.isArray(stdRes.data)) {
       APP_STATE.students = stdRes.data.map(s => ({
         id: s.id,
         matricule: s.matricule,
@@ -742,7 +742,7 @@ async function loadAllDataFromSupabase() {
       try { localStorage.setItem("riviera_cached_students", JSON.stringify(APP_STATE.students)); } catch (e) {}
     }
 
-    if (ttRes.data && !ttRes.error && Array.isArray(ttRes.data) && ttRes.data.length > 0) {
+    if (!ttRes.error && Array.isArray(ttRes.data)) {
       APP_STATE.timetables = ttRes.data;
       try { localStorage.setItem("riviera_cached_timetables", JSON.stringify(APP_STATE.timetables)); } catch (e) {}
     }
