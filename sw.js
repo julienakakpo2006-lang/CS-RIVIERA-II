@@ -3,7 +3,7 @@
    Mode Hors-Ligne Complet & Rapide
    ========================================================== */
 
-const CACHE_NAME = "riviera-scolaire-v7";
+const CACHE_NAME = "riviera-scolaire-v8";
 
 const LOCAL_ASSETS = [
   "./",

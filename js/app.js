@@ -417,6 +417,9 @@ async function flushOfflineQueue(isManualTrigger = false) {
       } else if (item.actionType === "UPSERT_TRIMESTER") {
         const { error } = await db.from("trimesters_config").upsert(item.payload);
         reqError = error;
+      } else if (item.actionType === "UPSERT_SETTING") {
+        const { error } = await db.from("app_settings").upsert(item.payload, { onConflict: "key" });
+        reqError = error;
       }
 
       if (reqError) {
@@ -489,8 +492,10 @@ function setupAuthentication() {
 
   populateAuthUserSelect();
 
-  const handleLogin = (e) => {
+  const handleLogin = async (e) => {
     if (e && e.preventDefault) e.preventDefault();
+    if (btnLogin && btnLogin.disabled) return;
+
     const selectedVal = userSelect ? userSelect.value : "Direction";
     const pwd = passwordInput ? passwordInput.value.trim() : "";
     if (errorMsg) errorMsg.textContent = "";
@@ -500,66 +505,93 @@ function setupAuthentication() {
       return;
     }
 
-    // 1. CONNEXION DIRECTION (ADMINISTRATEUR)
-    if (selectedVal === "Direction") {
-      const activeAdminCode = APP_STATE.adminAccessCode || "admin123";
-
-      // SEUL LE CODE ACTUEL EST ACCEPTÉ (L'ANCIEN CODE EST REJETÉ)
-      if (pwd === activeAdminCode) {
-        APP_STATE.currentUser = { role: "admin", name: "Direction" };
-        if (userDisplayName) userDisplayName.textContent = "Direction";
-        if (userDisplayRole) userDisplayRole.textContent = "Admin";
-        if (navAdmin) navAdmin.classList.remove("d-none");
-        if (navTeacher) navTeacher.classList.add("d-none");
-        switchSection("section-admin-dashboard");
-        if (authWrapper) authWrapper.classList.add("d-none");
-        if (appLayout) appLayout.classList.remove("d-none");
-        if (passwordInput) passwordInput.value = "";
-        resetPasswordInputsVisibility();
-        renderNotifications();
-        renderAnnouncements();
-        return;
-      } else {
-        if (errorMsg) errorMsg.textContent = "Code d'accès Direction incorrect.";
-        return;
-      }
+    if (btnLogin) {
+      btnLogin.disabled = true;
+      btnLogin.textContent = "⏳ Vérification...";
     }
 
-    // 2. CONNEXION PROFESSEUR
-    const teacher = APP_STATE.teachers.find(t => String(t.id) === String(selectedVal) || t.name === selectedVal);
-    if (teacher) {
-      const activeTeacherCode = teacher.access_code || "prof123";
+    try {
+      // 1. CONNEXION DIRECTION (ADMINISTRATEUR)
+      if (selectedVal === "Direction") {
+        await syncAppSettingsFromSupabase();
+        const activeAdminCode = APP_STATE.adminAccessCode || "admin123";
 
-      // SEUL LE CODE ACTUEL DU PROFESSEUR EST ACCEPTÉ
-      if (pwd === activeTeacherCode) {
-        APP_STATE.currentUser = { role: "teacher", id: teacher.id, name: teacher.name, teacherObj: teacher };
-        if (userDisplayName) userDisplayName.textContent = teacher.name;
-        if (userDisplayRole) userDisplayRole.textContent = "Professeur";
-        const welcomeEl = document.getElementById("teacher-dashboard-welcome");
-        if (welcomeEl) welcomeEl.textContent = teacher.name;
-        if (navAdmin) navAdmin.classList.add("d-none");
-        if (navTeacher) navTeacher.classList.remove("d-none");
-        updateTeacherBulletinNavVisibility();
-        switchSection("section-teacher-dashboard");
-        if (authWrapper) authWrapper.classList.add("d-none");
-        if (appLayout) appLayout.classList.remove("d-none");
-        if (passwordInput) passwordInput.value = "";
-        populateTeacherSelectors(teacher);
-        updateTeacherDashboardKPIs();
-        renderTeacherTimetable();
-        renderTeacherEvalRequests();
-        renderTeacherDerogations();
-        calculateTeacherStats();
-        renderNotifications();
-        renderAnnouncements();
-        return;
-      } else {
-        if (errorMsg) errorMsg.textContent = "Code d'accès incorrect.";
-        return;
+        // SEUL LE CODE ACTUEL EST ACCEPTÉ (L'ANCIEN CODE EST REJETÉ)
+        if (pwd === activeAdminCode) {
+          APP_STATE.currentUser = { role: "admin", name: "Direction" };
+          if (userDisplayName) userDisplayName.textContent = "Direction";
+          if (userDisplayRole) userDisplayRole.textContent = "Admin";
+          if (navAdmin) navAdmin.classList.remove("d-none");
+          if (navTeacher) navTeacher.classList.add("d-none");
+          switchSection("section-admin-dashboard");
+          if (authWrapper) authWrapper.classList.add("d-none");
+          if (appLayout) appLayout.classList.remove("d-none");
+          if (passwordInput) passwordInput.value = "";
+          resetPasswordInputsVisibility();
+          renderNotifications();
+          renderAnnouncements();
+          return;
+        } else {
+          if (errorMsg) errorMsg.textContent = "Code d'accès Direction incorrect.";
+          return;
+        }
+      }
+
+      // 2. CONNEXION PROFESSEUR — Synchroniser d'abord la liste réelle depuis Supabase si en ligne
+      ensureSupabaseClient();
+      if (db && navigator.onLine) {
+        try {
+          const { data, error } = await db
+            .from("teachers")
+            .select("id, name, access_code, subjects, classes")
+            .order("id", { ascending: true });
+          if (!error && Array.isArray(data) && data.length > 0) {
+            APP_STATE.teachers = data;
+            try { localStorage.setItem("riviera_cached_teachers", JSON.stringify(data)); } catch (err) {}
+          }
+        } catch (err) {}
+      }
+
+      const teacher = APP_STATE.teachers.find(t => String(t.id) === String(selectedVal) || t.name === selectedVal);
+      if (teacher) {
+        const activeTeacherCode = teacher.access_code || "prof123";
+
+        // SEUL LE CODE ACTUEL DU PROFESSEUR EST ACCEPTÉ
+        if (pwd === activeTeacherCode) {
+          APP_STATE.currentUser = { role: "teacher", id: teacher.id, name: teacher.name, teacherObj: teacher };
+          if (userDisplayName) userDisplayName.textContent = teacher.name;
+          if (userDisplayRole) userDisplayRole.textContent = "Professeur";
+          const welcomeEl = document.getElementById("teacher-dashboard-welcome");
+          if (welcomeEl) welcomeEl.textContent = teacher.name;
+          if (navAdmin) navAdmin.classList.add("d-none");
+          if (navTeacher) navTeacher.classList.remove("d-none");
+          updateTeacherBulletinNavVisibility();
+          switchSection("section-teacher-dashboard");
+          if (authWrapper) authWrapper.classList.add("d-none");
+          if (appLayout) appLayout.classList.remove("d-none");
+          if (passwordInput) passwordInput.value = "";
+          populateTeacherSelectors(teacher);
+          updateTeacherDashboardKPIs();
+          renderTeacherTimetable();
+          renderTeacherEvalRequests();
+          renderTeacherDerogations();
+          calculateTeacherStats();
+          renderNotifications();
+          renderAnnouncements();
+          return;
+        } else {
+          if (errorMsg) errorMsg.textContent = "Code d'accès incorrect.";
+          return;
+        }
+      }
+
+      if (errorMsg) errorMsg.textContent = "Compte introuvable.";
+    } finally {
+      if (btnLogin) {
+        btnLogin.disabled = false;
+        btnLogin.textContent = "Se connecter";
       }
     }
-
-    if (errorMsg) errorMsg.textContent = "Compte introuvable.";
   };
 
   if (form) form.addEventListener("submit", handleLogin);
@@ -595,6 +627,35 @@ function updateTeacherBulletinNavVisibility() {
 // ==========================================================
 // CHARGEMENT & SYNCHRONISATION SUPABASE
 // ==========================================================
+async function syncAppSettingsFromSupabase() {
+  ensureSupabaseClient();
+  if (!db || !navigator.onLine) return false;
+  try {
+    const { data, error } = await db.from("app_settings").select("key, value");
+    if (error || !Array.isArray(data)) {
+      if (error) console.warn("⚠️ Erreur lecture app_settings :", error);
+      return false;
+    }
+    data.forEach(row => {
+      if (row.key === "admin_access_code" && row.value) {
+        APP_STATE.adminAccessCode = row.value;
+        try { localStorage.setItem("riviera_admin_code", row.value); } catch (e) {}
+      }
+      if (row.key === "allow_prof_bulletin_print") {
+        APP_STATE.allowProfBulletinPrint = row.value === "true";
+        try { localStorage.setItem("riviera_allow_prof_bulletin", String(APP_STATE.allowProfBulletinPrint)); } catch (e) {}
+        const toggleBulletin = document.getElementById("toggle-admin-allow-prof-bulletin-print");
+        if (toggleBulletin) toggleBulletin.checked = APP_STATE.allowProfBulletinPrint;
+        updateTeacherBulletinNavVisibility();
+      }
+    });
+    return true;
+  } catch (err) {
+    console.warn("⚠️ Impossible de lire app_settings :", err);
+    return false;
+  }
+}
+
 async function loadAllDataFromSupabase() {
   ensureSupabaseClient();
   if (!db) {
@@ -602,6 +663,7 @@ async function loadAllDataFromSupabase() {
     updateNetworkIndicator(false);
     return;
   }
+  await syncAppSettingsFromSupabase();
   try {
     const tableNames = [
       "classes", "subjects", "teachers", "students", "grades",
@@ -4020,13 +4082,55 @@ document.getElementById("btn-confirm-refusal")?.addEventListener("click", async 
 function setupTrimesterSettings() {
   const form = document.getElementById("form-admin-trimesters-dates");
   const toggleBulletin = document.getElementById("toggle-admin-allow-prof-bulletin-print");
-if (toggleBulletin) toggleBulletin.checked = APP_STATE.allowProfBulletinPrint;
+  if (toggleBulletin) toggleBulletin.checked = APP_STATE.allowProfBulletinPrint;
 
-toggleBulletin?.addEventListener("change", (e) => {
- APP_STATE.allowProfBulletinPrint = e.target.checked;
- try { localStorage.setItem("riviera_allow_prof_bulletin", String(APP_STATE.allowProfBulletinPrint)); } catch (err) {}
- updateTeacherBulletinNavVisibility();
-});
+  toggleBulletin?.addEventListener("change", async (e) => {
+    const isAllowed = Boolean(e.target.checked);
+    const settingPayload = {
+      key: "allow_prof_bulletin_print",
+      value: String(isAllowed),
+      updated_at: new Date().toISOString()
+    };
+
+    let synced = false;
+    let isOfflineQueued = false;
+    let supabaseErrorMsg = "";
+
+    ensureSupabaseClient();
+    if (db && navigator.onLine) {
+      try {
+        const { error } = await db
+          .from("app_settings")
+          .upsert(settingPayload, { onConflict: "key" });
+        if (error) {
+          console.error("❌ Erreur Supabase allow_prof_bulletin_print :", error);
+          if (/fetch|network|offline|timeout/i.test(error.message || "")) {
+            isOfflineQueued = true;
+            queueOfflineAction("UPSERT_SETTING", settingPayload);
+          } else {
+            supabaseErrorMsg = error.message || "Erreur Supabase";
+          }
+        } else {
+          synced = true;
+        }
+      } catch (err) {
+        isOfflineQueued = true;
+        queueOfflineAction("UPSERT_SETTING", settingPayload);
+      }
+    } else {
+      isOfflineQueued = true;
+      queueOfflineAction("UPSERT_SETTING", settingPayload);
+    }
+
+    if (!synced && !isOfflineQueued) {
+      e.target.checked = !isAllowed;
+      return alert("❌ Échec d'enregistrement dans Supabase :\n" + supabaseErrorMsg);
+    }
+
+    APP_STATE.allowProfBulletinPrint = isAllowed;
+    try { localStorage.setItem("riviera_allow_prof_bulletin", String(isAllowed)); } catch (err) {}
+    updateTeacherBulletinNavVisibility();
+  });
 
   form?.addEventListener("submit", async (e) => {
     e.preventDefault();
@@ -4302,6 +4406,50 @@ function setupPasswordModals() {
         return alert("Ancien code Administrateur incorrect.");
       }
 
+      const settingPayload = {
+        key: "admin_access_code",
+        value: newCode,
+        updated_at: new Date().toISOString()
+      };
+
+      let adminSynced = false;
+      let adminOffline = false;
+      let adminErrorMsg = "";
+
+      ensureSupabaseClient();
+      if (db && navigator.onLine) {
+        try {
+          const { data, error } = await db
+            .from("app_settings")
+            .upsert(settingPayload, { onConflict: "key" })
+            .select();
+
+          if (error) {
+            console.error("❌ Erreur Supabase code Direction :", error);
+            if (/fetch|network|offline|timeout/i.test(error.message || "")) {
+              adminOffline = true;
+              queueOfflineAction("UPSERT_SETTING", settingPayload);
+            } else {
+              adminErrorMsg = error.message || "Erreur Supabase";
+            }
+          } else if (!data || data.length === 0) {
+            adminErrorMsg = "Impossible de mettre à jour app_settings dans Supabase.";
+          } else {
+            adminSynced = true;
+          }
+        } catch (err) {
+          adminOffline = true;
+          queueOfflineAction("UPSERT_SETTING", settingPayload);
+        }
+      } else {
+        adminOffline = true;
+        queueOfflineAction("UPSERT_SETTING", settingPayload);
+      }
+
+      if (!adminSynced && !adminOffline) {
+        return alert("❌ Échec de mise à jour du code Direction dans Supabase :\n" + adminErrorMsg);
+      }
+
       APP_STATE.adminAccessCode = newCode;
       try {
         localStorage.setItem("riviera_admin_code", newCode);
@@ -4309,7 +4457,12 @@ function setupPasswordModals() {
 
       document.getElementById("modal-top-change-pwd")?.classList.add("d-none");
       e.target.reset();
-      alert("✅ Code d'accès Direction mis à jour avec succès !");
+      resetPasswordInputsVisibility();
+      alert(
+        adminSynced
+          ? "✅ Code d'accès Direction mis à jour dans Supabase pour tous les appareils !"
+          : "ℹ️ Code Direction modifié localement (hors-ligne). Synchronisation dès le retour d'Internet."
+      );
       return;
     }
 
