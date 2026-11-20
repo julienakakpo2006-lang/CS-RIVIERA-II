@@ -11,6 +11,8 @@ const LOCAL_ASSETS = [
   "./css/style.css",
   "./js/app.js",
   "./assets/logo.jpeg",
+  "./assets/icon-192.png",
+  "./assets/icon-512.png",
   "./manifest.json"
 ];
 
